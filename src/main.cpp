@@ -2570,6 +2570,8 @@ void vcMain_RenderSceneWindow(vcState *pProgramState)
       renderData.depthLines.Init(32);
       renderData.viewSheds.Init(32);
       renderData.pins.Init(512);
+      renderData.instancedPolyModels.Init(32);
+
       renderData.mouse.position.x = (uint32_t)(io.MousePos.x - viewportPosition.x);
       renderData.mouse.position.y = (uint32_t)(io.MousePos.y - viewportPosition.y);
       renderData.mouse.clicked = io.MouseClicked[1];
@@ -2669,6 +2671,7 @@ void vcMain_RenderSceneWindow(vcState *pProgramState)
       renderData.depthLines.Deinit();
       renderData.viewSheds.Deinit();
       renderData.pins.Deinit();
+      renderData.instancedPolyModels.Deinit();
 
       // Handle context menu
       if ((wasViewportContextMenuOpenLastFrame == -1 || wasViewportContextMenuOpenLastFrame == viewportIndex))

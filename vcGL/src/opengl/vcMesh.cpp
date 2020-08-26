@@ -179,7 +179,7 @@ udResult vcMesh_UploadSubData(vcMesh *pMesh, const vcVertexLayoutTypes *pLayout,
   return result;
 }
 
-bool vcMesh_Render(vcMesh *pMesh, uint32_t elementCount /* = 0*/, uint32_t startElement /* = 0*/, vcMeshRenderMode renderMode /*= vcMRM_Triangles*/)
+bool vcMesh_Render(vcMesh *pMesh, uint32_t elementCount /* = 0*/, uint32_t startElement /* = 0*/, vcMeshRenderMode renderMode /*= vcMRM_Triangles*/, uint32_t instanceCount /*= 1*/)
 {
   if (pMesh == nullptr || (pMesh->indexBytes > 0 && pMesh->indexCount < (elementCount + startElement) * 3) || (elementCount == 0 && startElement != 0))
     return false;
@@ -210,10 +210,20 @@ bool vcMesh_Render(vcMesh *pMesh, uint32_t elementCount /* = 0*/, uint32_t start
     break;
   }
 
-  if (pMesh->indexCount == 0)
-    glDrawArrays(glRenderMode, startElement * elementsPerPrimitive, elementCount * elementsPerPrimitive);
+  if (instanceCount == 1)
+  {
+    if (pMesh->indexCount == 0)
+      glDrawArrays(glRenderMode, startElement * elementsPerPrimitive, elementCount * elementsPerPrimitive);
+    else
+      glDrawElements(glRenderMode, elementCount * elementsPerPrimitive, pMesh->indexType, (void *)(size_t)(startElement * elementsPerPrimitive * pMesh->indexBytes));
+  }
   else
-    glDrawElements(glRenderMode, elementCount * elementsPerPrimitive, pMesh->indexType, (void*)(size_t)(startElement * elementsPerPrimitive * pMesh->indexBytes));
+  {
+    if (pMesh->indexCount == 0)
+      glDrawArraysInstanced(glRenderMode, startElement * elementsPerPrimitive, elementCount * elementsPerPrimitive, instanceCount);
+    else
+      glDrawElementsInstanced(glRenderMode, elementCount * elementsPerPrimitive, pMesh->indexType, (void *)(size_t)(startElement * elementsPerPrimitive * pMesh->indexBytes), instanceCount);
+  }
 
   VERIFY_GL();
 

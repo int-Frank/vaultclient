@@ -48,6 +48,15 @@ struct vcPolygonModel
   udInterlockedBool keepLoading;
 };
 
+// instancing
+struct vcPolygonInstanceData
+{
+  udFloat4x4 worldViewProjectionMatrix;
+  udFloat4 colour;
+};
+// All our target graphic APIs support a buffer size of 65536 bytes.
+#define MAX_BATCH_INSTANCE_COUNT (65536 / sizeof(vcPolygonInstanceData))
+
 udResult vcPolygonModel_CreateShaders(udWorkerPool *pWorkerPool);
 udResult vcPolygonModel_DestroyShaders();
 
@@ -57,6 +66,7 @@ udResult vcPolygonModel_CreateFromURL(vcPolygonModel **ppModel, const char *pURL
 udResult vcPolygonModel_Destroy(vcPolygonModel **ppModel);
 
 udResult vcPolygonModel_Render(vcPolygonModel *pModel, const float encodedObjectId, const udDouble4x4 &modelMatrix, const udDouble4x4 &viewProjectionMatrix, const vcPolyModelPass &passType = vcPMP_Standard, const udFloat4 &tint = udFloat4::one(), vcTexture *pDiffuseOverride = nullptr, const udFloat4 *pColourOverride = nullptr);
+udResult vcPolygonModel_RenderInstanced(vcPolygonModel *pModel, uint32_t instanceCount, void *pInstanceData, uint32_t perInstanceDataSize);
 
 // TODO: (EVC-570) Parsing formats should be in their own module, not here
 udResult vcPolygonModel_CreateFromVSMFInMemory(vcPolygonModel **ppModel, char *pData, int dataLength, udWorkerPool *pWorkerPool);

@@ -1121,26 +1121,26 @@ void vcRender_RenderAndApplyViewSheds(vcState *pProgramState, vcRenderContext *p
     vcGLState_SetBlendMode(vcGLSBM_None);
     vcGLState_SetFaceMode(vcGLSFM_Solid, vcGLSCM_None);
     vcGLState_SetDepthStencilMode(vcGLSDM_LessOrEqual, true);
-    
+
     vcGLState_SetViewport(0, 0, ViewShedMapRes.x, ViewShedMapRes.y);
     vcFramebuffer_Bind(pRenderContext->viewShedRenderingContext.pFramebuffer, vcFramebufferClearOperation_All);
 
     if (doUDRender)
       vcRender_ConditionalSplatUD(pProgramState, pRenderContext, pRenderContext->viewShedRenderingContext.pDummyColour, pRenderContext->viewShedRenderingContext.pUDDepthTexture, renderData);
-    
+
     if (doPolygonRender)
     {
       for (int r = 0; r < ViewShedMapCount; ++r)
       {
         udDouble4x4 viewProjection = shadowRenderCameras[r].matrices.projection * shadowRenderCameras[r].matrices.view;
         vcGLState_SetViewport(r * singleRenderSize.x, 0, singleRenderSize.x, ViewShedMapRes.y);
-    
+
         for (size_t p = 0; p < renderData.polyModels.length; ++p)
         {
           vcRenderPolyInstance *pInstance = &renderData.polyModels[p];
           if (pInstance->HasFlag(vcRenderPolyInstance::RenderFlags_Transparent))
             continue;
-    
+
           if (pInstance->renderType == vcRenderPolyInstance::RenderType_Polygon)
             vcPolygonModel_Render(pInstance->pModel, 0.0f, pInstance->worldMat, viewProjection, vcPMP_Shadows);
           else if (pInstance->renderType == vcRenderPolyInstance::RenderType_SceneLayer)
@@ -1148,12 +1148,12 @@ void vcRender_RenderAndApplyViewSheds(vcState *pProgramState, vcRenderContext *p
         }
       }
     }
-    
+  
     pRenderContext->shadowShader.params.inverseProjection = udFloat4x4::create(udInverse(pProgramState->pActiveViewport->camera.matrices.projection));
     pRenderContext->shadowShader.params.viewDistance = udFloat4::create(pViewShedData->viewDistance, 0.0f, 0.0f, 0.0f);
     pRenderContext->shadowShader.params.visibleColour = pViewShedData->visibleColour;
     pRenderContext->shadowShader.params.notVisibleColour = pViewShedData->notVisibleColour;
-    
+
     vcGLState_SetDepthStencilMode(vcGLSDM_Always, false);
     vcGLState_SetFaceMode(vcGLSFM_Solid, vcGLSCM_Back);
     vcGLState_SetBlendMode(vcGLSBM_Additive);
@@ -1209,8 +1209,22 @@ void vcRender_OpaquePass(vcState *pProgramState, vcRenderContext *pRenderContext
         vcSceneLayerRenderer_Render(pInstance->pSceneLayer, objectId, pInstance->worldMat, pProgramState->pActiveViewport->camera.matrices.viewProjection, pProgramState->pActiveViewport->camera.position, pRenderContext->sceneResolution);
     }
 
-    vcGLState_SetFaceMode(vcGLSFM_Solid, vcGLSCM_Back);
     vcSceneLayer_EndFrame();
+
+    // Instanced polygon models
+    {
+      for (size_t i = 0; i < renderData.instancedPolyModels.length; ++i)
+      {
+        vcBatchedRenderQueue<vcPolygonInstanceData> *pQueue = renderData.instancedPolyModels[i].pBatches;
+        for (uint32_t q = 0; q < pQueue->GetBatchCount(); ++q)
+        {
+          const vcBatchedRenderQueue<vcPolygonInstanceData>::Batch *pBatch = pQueue->GetBatch(q);
+          vcPolygonModel_RenderInstanced(renderData.instancedPolyModels[i].pModel, pBatch->count, pBatch->pData, sizeof(vcPolygonInstanceData));
+        }
+      }
+    }
+
+    vcGLState_SetFaceMode(vcGLSFM_Solid, vcGLSCM_Back);
 
     for (size_t i = 0; i < renderData.waterVolumes.length; ++i)
       vcWaterRenderer_Render(renderData.waterVolumes[i], pProgramState->pActiveViewport->camera.matrices.view, pProgramState->pActiveViewport->camera.matrices.viewProjection, pRenderContext->skyboxShaderPanorama.pSkyboxTexture, pProgramState->deltaTime);

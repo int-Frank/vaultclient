@@ -15,6 +15,7 @@
 #include "vcImageRenderer.h"
 #include "vcPolygonModel.h"
 #include "vcLineRenderer.h"
+#include "vcBatchedRenderQueue.h"
 
 struct vcRenderContext;
 struct vcTexture;
@@ -84,6 +85,12 @@ struct vcPins
   vcSceneItem *pSceneItem;
 };
 
+struct vcInstancedPolygonInstance
+{
+  vcPolygonModel *pModel;
+  vcBatchedRenderQueue<vcPolygonInstanceData> *pBatches;
+};
+
 struct vcRenderData
 {
   vcMouseData mouse;
@@ -100,6 +107,8 @@ struct vcRenderData
 
   udChunkedArray<vcViewShedData> viewSheds;
   udChunkedArray<vcPins> pins;
+
+  udChunkedArray<vcInstancedPolygonInstance> instancedPolyModels;
 
   vcTexture *pSceneTexture;
   udFloat2 sceneScaling;

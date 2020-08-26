@@ -29,6 +29,8 @@ enum vcPolygonModelShaderType
   vcPMST_P3N3UV2_DepthOnly,
   vcPMST_P3N3UV2_Opaque_Image,
 
+  vcPMST_P3N3UV2_Instanced_Opaque,
+
   vcPMST_Count
 };
 
@@ -560,6 +562,37 @@ udResult vcPolygonModel_Render(vcPolygonModel *pModel, const float encodedObject
   return result;
 }
 
+udResult vcPolygonModel_RenderInstanced(vcPolygonModel *pModel, uint32_t instanceCount, void *pInstanceData, uint32_t perInstanceDataSize)
+{
+  if (pModel == nullptr)
+    return udR_InvalidParameter_;
+
+  udResult result = udR_Success;
+
+  for (int i = 0; i < pModel->meshCount; ++i)
+  {
+    vcPolygonModelMesh *pModelMesh = &pModel->pMeshes[i];
+    vcPolygonModelShader *pPolygonShader = &gShaders[vcPMST_P3N3UV2_Instanced_Opaque]; // TODO: variants
+    vcTexture *pDiffuseTexture = pModelMesh->material.pTexture;
+
+    if (pModelMesh->pMesh == nullptr)
+      continue;
+
+    if (pDiffuseTexture == nullptr)
+      pDiffuseTexture = pWhiteTexture;
+
+    vcShader_Bind(pPolygonShader->pShader);
+
+    vcShader_BindConstantBuffer(pPolygonShader->pShader, pPolygonShader->pEveryObjectConstantBuffer, pInstanceData, instanceCount * perInstanceDataSize);
+    vcShader_BindTexture(pPolygonShader->pShader, pDiffuseTexture, 0, pPolygonShader->pDiffuseSampler);
+
+    vcMesh_Render(pModelMesh->pMesh, 0, 0, vcMRM_Triangles, instanceCount);
+  }
+
+  // TODO: (EVC-570) handle failures
+  return result;
+}
+
 udResult vcPolygonModel_Destroy(vcPolygonModel **ppModel)
 {
   if (ppModel == nullptr || *ppModel == nullptr)
@@ -628,6 +661,17 @@ udResult vcPolygonModel_CreateShaders(udWorkerPool *pWorkerPool)
     {
       vcShader_Bind(pPolygonShader->pShader);
       vcShader_GetConstantBuffer(&pPolygonShader->pEveryObjectConstantBuffer, pPolygonShader->pShader, "u_EveryObject", sizeof(vcPolygonModelShader::everyObject));
+    }
+  ), udR_InternalError);
+
+
+  pPolygonShader = &gShaders[vcPMST_P3N3UV2_Instanced_Opaque];
+  UD_ERROR_IF(!vcShader_CreateFromFileAsync(&pPolygonShader->pShader, pWorkerPool, "asset://assets/shaders/polygonP3N3UV2InstancedVertexShader", "asset://assets/shaders/polygonP3N3UV2FragmentShader", vcP3N3UV2VertexLayout,
+    [pPolygonShader](void *)
+    {
+      vcShader_Bind(pPolygonShader->pShader);
+      vcShader_GetConstantBuffer(&pPolygonShader->pEveryObjectConstantBuffer, pPolygonShader->pShader, "u_EveryInstanceDynamic", MAX_BATCH_INSTANCE_COUNT * sizeof(vcPolygonInstanceData));
+      vcShader_GetSamplerIndex(&pPolygonShader->pDiffuseSampler, pPolygonShader->pShader, "albedo");
     }
   ), udR_InternalError);
 
