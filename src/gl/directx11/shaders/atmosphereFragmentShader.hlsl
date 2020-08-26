@@ -1551,7 +1551,7 @@ the scene:
   output.Color0.a = 1.0;
 
   // debugging
-  //output.Color0.xyz = lerp(GetSkyRadiance(camera - earth_center, view_direction, shadow_length, sun_direction, transmittance), output.Color0.xyz, 0.2);
+ // output.Color0.xyz = lerp(sceneNormal.xyz, output.Color0.xyz, 0.2);
 	
   return output;
 }

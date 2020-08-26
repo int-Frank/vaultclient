@@ -18,6 +18,11 @@
 #include "udChunkedArray.h"
 #include "udStringUtil.h"
 
+#define MAX_KEY_FRAME_COUNT 25
+
+// the display model is 35 meters too high?
+udDouble3 hackDisplayOffsetAmount = udDouble3::create(0, 0, 30.0);
+
 struct vcLiveFeedItemLOD
 {
   double distance; // Normalized Distance
@@ -33,7 +38,13 @@ struct vcLiveFeedItemLOD
 
 struct vcLiveFeedItem
 {
-  udUUID uuid;
+  //udUUID uuid;
+  char uuid[33];
+  char type[25];
+
+  double time;
+  double refreshHeightTime;
+  bool justSpawned;
 
   bool visible;
   bool selected;
@@ -45,13 +56,20 @@ struct vcLiveFeedItem
   udDouble3 previousPositionLatLong; // Previous known location
   udDouble3 livePositionLatLong; // Latest known location
 
-  udDouble3 previousLerpedLatLong;
+  //udDouble3 previousLerpedLatLong;
   udDouble3 displayPosition; // Where we're going to display the item (geolocated space)
 
   double tweenAmount;
 
   double minBoundingRadius;
-  udChunkedArray<vcLiveFeedItemLOD> lodLevels;
+  //udChunkedArray<vcLiveFeedItemLOD> lodLevels;
+
+  udDouble3 displayPositions[MAX_KEY_FRAME_COUNT];
+  int count;
+
+  bool lineCalculated;
+  vcLineInstance *pLine;
+  vcLabelInfo label;
 };
 
 struct vcLiveFeedUpdateInfo
@@ -62,19 +80,40 @@ struct vcLiveFeedUpdateInfo
   bool newer; // Are we fetching newer or older data?
 };
 
-void vcLiveFeedItem_ClearLODs(vcLiveFeedItem *pFeedItem)
-{
-  for (size_t lodLevelIndex = 0; lodLevelIndex < pFeedItem->lodLevels.length; ++lodLevelIndex)
-  {
-    vcLiveFeedItemLOD &ref = pFeedItem->lodLevels[lodLevelIndex];
+//void vcLiveFeedItem_ClearLODs(vcLiveFeedItem *pFeedItem)
+//{
+//  for (size_t lodLevelIndex = 0; lodLevelIndex < pFeedItem->lodLevels.length; ++lodLevelIndex)
+//  {
+//    vcLiveFeedItemLOD &ref = pFeedItem->lodLevels[lodLevelIndex];
+//
+//    udFree(ref.pPinIcon);
+//    udFree(ref.pLabelText);
+//    udFree(ref.pLabelInfo);
+//    udFree(ref.pModelAddress);
+//  }
+//
+//  pFeedItem->lodLevels.Deinit();
+//}
 
-    udFree(ref.pPinIcon);
-    udFree(ref.pLabelText);
-    udFree(ref.pLabelInfo);
-    udFree(ref.pModelAddress);
+udDouble4 frustumPlanes[6];
+
+// Returns -1=outside, 0=inside, >0=partial (bits of planes crossed)
+static int vcQuadTree_FrustumTest( const udDouble3 &boundCenter, const udDouble3 &boundExtents)
+{
+  int partial = 0;
+
+  for (int i = 0; i < 6; ++i)
+  {
+    double distToCenter = udDot4(udDouble4::create(boundCenter, 1.0), frustumPlanes[i]);
+    //optimized for case where boxExtents are all same: udFloat radiusBoxAtPlane = udDot3(boxExtents, udAbs(udVec3(curPlane)));
+    double radiusBoxAtPlane = udDot3(boundExtents, udAbs(frustumPlanes[i].toVector3()));
+    if (distToCenter < -radiusBoxAtPlane)
+      return -1; // Box is entirely behind at least one plane
+    else if (distToCenter <= radiusBoxAtPlane) // If spanned (not entirely infront)
+      partial |= (1 << i);
   }
 
-  pFeedItem->lodLevels.Deinit();
+  return partial;
 }
 
 void vcLiveFeed_LoadModel(void *pUserData)
@@ -108,172 +147,419 @@ void vcLiveFeed_LoadModel(void *pUserData)
   }
 }
 
+
+#include "udWeb.h"
+#include "udStringUtil.h"
+
+vcPolygonModel *pCarModel = nullptr;
+vcPolygonModel *pTaxiModel = nullptr;
+vcPolygonModel *pBusModel = nullptr;
+vcPolygonModel *pHGVModel = nullptr;
+vcPolygonModel *pMotorcycleModel = nullptr;
+vcPolygonModel *pPrivateHireModel = nullptr;
+vcPolygonModel *pAirQualityStationModel = nullptr;
+vcPolygonModel *pCCTVModel = nullptr;
+
+extern QueryVisualizationTexture densityMap;
+udInt2 densityMapSize = udInt2::zero();
+uint32_t *pDensityMapPixels = nullptr;
+
+struct PointInfo
+{
+  char name[256];
+  udDouble3 latLon;
+
+  udDouble4x4 transform;
+};
+udChunkedArray<PointInfo> cctv;
+udChunkedArray<PointInfo> airQualityStations;
+
+void vcLiveFeed_GenerateDensityMapWT(void *pUserData)
+{
+  udUnused(pUserData);
+
+  //api = { 'api': "qbF^obhbQEfDzUtNgUN3nZk1$7f6#?IA", 'query' : """
+  //  SELECT cast((lat / 0.01) AS integer) as latz, cast((lon / 0.01) as integer) as lonz, COUNT(*)
+  //  FROM geospock.default.hkjourneysrevisedlatest1daymedium AS event
+  //  WHERE event.timestamp BETWEEN TIMESTAMP '2020-08-10 08:00:0' AND TIMESTAMP '2020-08-10 09:00:00'
+  //  GROUP BY 1, 2
+  //""" }
+
+  const char *pFeedsJSON = nullptr;
+  uint64_t responseLength = 0;
+  int responseCode = 0;
+
+  const char message[] = "{ \"api\": \"qbF^obhbQEfDzUtNgUN3nZk1$7f6#?IA\", \"query\": \"SELECT cast((lat / 0.0001) AS integer) as latz, cast((lon / 0.00025) as integer) as lonz, COUNT(*) FROM geospock.default.hkjourneysrevisedlatest1daymedium AS event WHERE event.timestamp BETWEEN TIMESTAMP '2020-08-10 08:00:0' AND TIMESTAMP '2020-08-10 09:00:00' GROUP BY 1, 2\"}";
+  const char *pServerAddr = "http://54.183.255.231:7998/query";
+
+  udWebOptions options = {};
+  options.method = udWM_POST;
+  options.pPostData = (uint8_t *)message;
+  options.postLength = udLengthOf(message) - 1;
+
+  udError vError = udWeb_RequestAdv(pServerAddr, options, &pFeedsJSON, &responseLength, &responseCode);
+
+  udInt2 latBounds = udInt2::create(999999, -999999);
+  udInt2 lonBounds = udInt2::create(999999, -999999);
+  if (vError == udE_Success)
+  {
+    udJSON data;
+    if (data.Parse(pFeedsJSON) == udR_Success)
+    {
+      udJSONArray *pFeeds = data.AsArray();
+      for (size_t i = 0; i < pFeeds->length; ++i)
+      {
+        udJSONArray *pNode = pFeeds->GetElement(i)->AsArray();
+        int lat = pNode->GetElement(0)->AsInt();
+        int lon = pNode->GetElement(1)->AsInt();
+
+        latBounds.x = udMin(lat, latBounds.x);
+        latBounds.y= udMax(lat, latBounds.y);
+        lonBounds.x = udMin(lon, lonBounds.x);
+        lonBounds.y = udMax(lon, lonBounds.y);
+        //int count = pNode->GetElement(2)->AsInt();
+      }
+
+      densityMapSize.x = latBounds.y - latBounds.x;
+      densityMapSize.y = lonBounds.y - lonBounds.x;
+      pDensityMapPixels = udAllocType(uint32_t, densityMapSize.x * densityMapSize.y, udAF_Zero);
+
+      densityMap.boundsLatLon.x = latBounds.x / 10000.0;
+      densityMap.boundsLatLon.y = latBounds.y / 10000.0;
+      densityMap.boundsLatLon.z = lonBounds.x / 4000.0;
+      densityMap.boundsLatLon.w = lonBounds.y / 4000.0;
+
+      float colorRanges[] =
+      {
+        1000.0f,
+      //  50000.0f,
+        2500.0f,
+      };
+
+      for (size_t i = 0; i < pFeeds->length; ++i)
+      {
+        udJSONArray *pNode = pFeeds->GetElement(i)->AsArray();
+        int lat = pNode->GetElement(0)->AsInt();
+        int lon = pNode->GetElement(1)->AsInt();
+
+        int count = pNode->GetElement(2)->AsInt();
+
+        int pixelX = ((lat - latBounds.x) - 1);// / (latBounds.y - latBounds.x));
+        int pixelY = ((lon - lonBounds.x) - 1);// / (lonBounds.y - lonBounds.x));
+
+        //udFloat3 hsv = udFloat3::create(1.0f - udMin(1.0f, count / 100000.0f), 1, 1);
+        //udFloat3 rgb = hsv2rgb(hsv);
+
+       // int r = (int)(rgb.x * 255);
+        //int g = (int)(rgb.y * 255);
+       // int b = (int)(rgb.z * 255);
+        int g = 0;
+        int b = 0;
+        int r = 0;
+
+        udFloat3 colA = udFloat3::create(0, 0, 0);
+        udFloat3 colB = udFloat3::create(0, 1, 0);
+        udFloat3 colC = udFloat3::create(1, 0, 0);
+
+        udFloat3 colAB = udLerp(colA, colB, udMin(1.0f, count / colorRanges[0]));
+        udFloat3 finalCol = udLerp(colAB, colC, udMin(1.0f, count / colorRanges[1]));
+        ////if (count <= colorRanges[0])
+        //  g = ((int)(udClamp(count / colorRanges[0], 0.0f, 1.0f) * 255));
+        ////else if (count <= colorRanges[1])
+        ////  b = ((int)(udClamp((count - colorRanges[0]) / colorRanges[1], 0.0f, 1.0f) * 255));
+        ////else if (count <= colorRanges[1])
+        //  r = ((int)(udClamp((count - colorRanges[0]) / colorRanges[1], 0.0f, 1.0f) * 255));
+        ////else
+        ////  r = 255;
+
+        r = (int)(finalCol.x * 255);
+        g = (int)(finalCol.y * 255);
+        b = (int)(finalCol.z * 255);
+
+        uint32_t pixelValue = (0xff000000) | r | (g << 8) | (b << 16);
+
+        pDensityMapPixels[udMax(0, pixelX + pixelY * densityMapSize.x)] += pixelValue;
+      }
+    }
+  }
+}
+
+void vcLiveFeed_GenerateDensityMapMT(void *pUserData)
+{
+  udUnused(pUserData);
+
+  vcTexture_Create(&densityMap.pTexture, densityMapSize.x, densityMapSize.y, pDensityMapPixels);
+}
+
+void vcLiveFeed_GenerateCCTVPointsWT(void *pUserData)
+{
+  vcLiveFeedUpdateInfo *pInfo = (vcLiveFeedUpdateInfo *)pUserData;
+
+  cctv.Init(128);
+
+  //api = { 'api': "qbF^obhbQEfDzUtNgUN3nZk1$7f6#?IA", 'query' : """
+  //  SELECT cast((lat / 0.01) AS integer) as latz, cast((lon / 0.01) as integer) as lonz, COUNT(*)
+  //  FROM geospock.default.hkjourneysrevisedlatest1daymedium AS event
+  //  WHERE event.timestamp BETWEEN TIMESTAMP '2020-08-10 08:00:0' AND TIMESTAMP '2020-08-10 09:00:00'
+  //  GROUP BY 1, 2
+  //""" }
+
+  const char *pFeedsJSON = nullptr;
+  uint64_t responseLength = 0;
+  int responseCode = 0;
+
+  const char message[] = "{ \"api\": \"qbF^obhbQEfDzUtNgUN3nZk1$7f6#?IA\", \"query\": \"SELECT lat, lon, description FROM geospock.default.hongkongcctv1 AS poi\"}";
+  const char *pServerAddr = "http://54.183.255.231:7998/query";
+
+  udWebOptions options = {};
+  options.method = udWM_POST;
+  options.pPostData = (uint8_t *)message;
+  options.postLength = udLengthOf(message) - 1;
+
+  udError vError = udWeb_RequestAdv(pServerAddr, options, &pFeedsJSON, &responseLength, &responseCode);
+
+  if (vError == udE_Success)
+  {
+    udLockMutex(pInfo->pFeed->m_pMutex);
+    udJSON data;
+    if (data.Parse(pFeedsJSON) == udR_Success)
+    {
+      udJSONArray *pFeeds = data.AsArray();
+      for (size_t i = 0; i < pFeeds->length; ++i)
+      {
+        udJSONArray *pNode = pFeeds->GetElement(i)->AsArray();
+
+        PointInfo *pNewPoint = cctv.PushBack();
+        pNewPoint->latLon.x = pNode->GetElement(0)->AsDouble();
+        pNewPoint->latLon.y = pNode->GetElement(1)->AsDouble();
+        udStrcpy(pNewPoint->name, pNode->GetElement(2)->AsString());
+      }
+    }
+
+    udReleaseMutex(pInfo->pFeed->m_pMutex);
+  }
+}
+
+void vcLiveFeed_GenerateCCTVPointsMT(void *pUserData)
+{
+  vcLiveFeedUpdateInfo *pInfo = (vcLiveFeedUpdateInfo *)pUserData;
+
+  udProjectNode *pParent = nullptr;
+  if (udProjectNode_Create(pInfo->pProgramState->activeProject.pProject, &pParent, pInfo->pProgramState->activeProject.pRoot, "Folder", "CCTV Locations", nullptr, nullptr) != udE_Success)
+  {
+    // error message
+  }
+
+  for (int i = 0; i < cctv.length; ++i)
+  {
+    const char *pNodeName = cctv[i].name;
+    udDouble3 lonLat = udDouble3::create(cctv[i].latLon.y, cctv[i].latLon.x, hackDisplayOffsetAmount.z + 15.0f);
+    udDouble3 position = udGeoZone_LatLongToCartesian(pInfo->pProgramState->geozone, cctv[i].latLon, false);
+
+    // place on maps, then offset slightly
+    position = vcRender_QueryMapAtCartesian(pInfo->pProgramState->pActiveViewport->pRenderContext, position) + hackDisplayOffsetAmount;
+    cctv[i].transform = udDouble4x4::scaleUniform(0.025f, position);
+
+    // add node to project
+    udProjectNode *pNode = nullptr;
+    if (udProjectNode_Create(pInfo->pProgramState->activeProject.pProject, &pNode, pParent, "POI", pNodeName, nullptr, nullptr) != udE_Success)
+    {
+      // error UI
+    }
+
+    if (udProjectNode_SetGeometry(pInfo->pProgramState->activeProject.pProject, pNode, udPGT_Point, 1, (double *)&lonLat) != udE_Success)
+    {
+      // error ui
+    }
+  }
+}
+
+void vcLiveFeed_GenerateAirStationPointsWT(void *pUserData)
+{
+  vcLiveFeedUpdateInfo *pInfo = (vcLiveFeedUpdateInfo *)pUserData;
+
+  airQualityStations.Init(128);
+
+  //api = { 'api': "qbF^obhbQEfDzUtNgUN3nZk1$7f6#?IA", 'query' : """
+  //  SELECT cast((lat / 0.01) AS integer) as latz, cast((lon / 0.01) as integer) as lonz, COUNT(*)
+  //  FROM geospock.default.hkjourneysrevisedlatest1daymedium AS event
+  //  WHERE event.timestamp BETWEEN TIMESTAMP '2020-08-10 08:00:0' AND TIMESTAMP '2020-08-10 09:00:00'
+  //  GROUP BY 1, 2
+  //""" }
+
+  const char *pFeedsJSON = nullptr;
+  uint64_t responseLength = 0;
+  int responseCode = 0;
+
+  const char message[] = "{ \"api\": \"qbF^obhbQEfDzUtNgUN3nZk1$7f6#?IA\", \"query\": \"SELECT lat, lon, facility_name FROM geospock.default.hkairqualitystations\"}";
+  const char *pServerAddr = "http://54.183.255.231:7998/query";
+
+  udWebOptions options = {};
+  options.method = udWM_POST;
+  options.pPostData = (uint8_t *)message;
+  options.postLength = udLengthOf(message) - 1;
+
+  udError vError = udWeb_RequestAdv(pServerAddr, options, &pFeedsJSON, &responseLength, &responseCode);
+
+  if (vError == udE_Success)
+  {
+    udLockMutex(pInfo->pFeed->m_pMutex);
+    udJSON data;
+    if (data.Parse(pFeedsJSON) == udR_Success)
+    {
+      udJSONArray *pFeeds = data.AsArray();
+      for (size_t i = 0; i < pFeeds->length; ++i)
+      {
+        udJSONArray *pNode = pFeeds->GetElement(i)->AsArray();
+
+        PointInfo *pNewPoint = airQualityStations.PushBack();
+        pNewPoint->latLon.x = pNode->GetElement(0)->AsDouble();
+        pNewPoint->latLon.y = pNode->GetElement(1)->AsDouble();
+        udStrcpy(pNewPoint->name, pNode->GetElement(2)->AsString());
+      }
+    }
+
+    udReleaseMutex(pInfo->pFeed->m_pMutex);
+  }
+}
+
+void vcLiveFeed_GenerateAirStationPointsMT(void *pUserData)
+{
+  vcLiveFeedUpdateInfo *pInfo = (vcLiveFeedUpdateInfo *)pUserData;
+
+  udProjectNode *pParent = nullptr;
+  if (udProjectNode_Create(pInfo->pProgramState->activeProject.pProject, &pParent, pInfo->pProgramState->activeProject.pRoot, "Folder", "Air Quality Stations", nullptr, nullptr) != udE_Success)
+  {
+    // error message
+  }
+
+  for (int i = 0; i < airQualityStations.length; ++i)
+  {
+    const char *pNodeName = airQualityStations[i].name;
+
+    udDouble3 lonLat = udDouble3::create(airQualityStations[i].latLon.y, airQualityStations[i].latLon.x, hackDisplayOffsetAmount.z);
+    udDouble3 position = udGeoZone_LatLongToCartesian(pInfo->pProgramState->geozone, airQualityStations[i].latLon, false);
+
+    // place on maps, then offset slightly
+    position = vcRender_QueryMapAtCartesian(pInfo->pProgramState->pActiveViewport->pRenderContext, position) + hackDisplayOffsetAmount;
+    airQualityStations[i].transform = udDouble4x4::scaleUniform(0.025f, position);
+
+    // add node to project
+    udProjectNode *pNode = nullptr;
+    if (udProjectNode_Create(pInfo->pProgramState->activeProject.pProject, &pNode, pParent, "POI", pNodeName, nullptr, nullptr) != udE_Success)
+    {
+      // error UI
+    }
+
+    if (udProjectNode_SetGeometry(pInfo->pProgramState->activeProject.pProject, pNode, udPGT_Point, 1, (double *)&lonLat) != udE_Success)
+    {
+      // error ui
+    }
+  }
+}
+
 void vcLiveFeed_UpdateFeed(void *pUserData)
 {
   vcLiveFeedUpdateInfo *pInfo = (vcLiveFeedUpdateInfo*)pUserData;
 
   const char *pFeedsJSON = nullptr;
+  uint64_t responseLength = 0;
+  int responseCode = 0;
 
-  const char *pServerAddr = "v1/feeds/fetch";
-  const char *pMessage = udTempStr("{ \"groupid\": \"%s\", \"time\": %f, \"newer\": %s }", udUUID_GetAsString(&pInfo->pFeed->m_groupID), pInfo->newer ? pInfo->pFeed->m_newestFeedUpdate : pInfo->pFeed->m_oldestFeedUpdate, pInfo->newer ? "true" : "false");
+  //const char *pServerAddr = "v1/feeds/fetch";
+  //const char *pMessage = udTempStr("{ \"groupid\": \"%s\", \"time\": %f, \"newer\": %s }", udUUID_GetAsString(&pInfo->pFeed->m_groupID), pInfo->newer ? pInfo->pFeed->m_newestFeedUpdate : pInfo->pFeed->m_oldestFeedUpdate, pInfo->newer ? "true" : "false");
 
-  udError vError = udServerAPI_Query(pInfo->pProgramState->pUDSDKContext, pServerAddr, pMessage, &pFeedsJSON);
+  //const char message[] = "{ \"api\": \"qbF^obhbQEfDzUtNgUN3nZk1$7f6#?IA\", \"query\": \"SELECT * FROM geospock.default.hkjourneysrevisedlatest1daymedium AS event WHERE event.timestamp BETWEEN TIMESTAMP '2020-08-10 08:00:00' AND TIMESTAMP '2020-08-10 08:00:01'\"}";
+  const char message[] = "{ \"api\": \"qbF^obhbQEfDzUtNgUN3nZk1$7f6#?IA\", \"query\": \"SELECT * FROM geospock.default.hkjourneysrevisedlatest1daylarge AS event WHERE event.timestamp BETWEEN TIMESTAMP '2020-08-10 08:00:00' AND TIMESTAMP '2020-08-10 08:00:20'\"}";
+  const char *pServerAddr = "http://54.183.255.231:7998/query";
 
-  double updatedTime = 0.0;
+  udWebOptions options = {};
+  options.method = udWM_POST;
+  options.pPostData = (uint8_t*)message;
+  options.postLength = udLengthOf(message) - 1;
+
+  udError vError = udWeb_RequestAdv(pServerAddr, options, &pFeedsJSON, &responseLength, &responseCode);
+
+ // double updatedTime = 0.0;
 
   pInfo->pFeed->m_lastFeedSync = udGetEpochSecsUTCf();
+
+  //udLockMutex(pInfo->pFeed->m_pMutex);
+
+  // todo: memory cleanup
+  //pInfo->pFeed->m_feedItems.Clear();
 
   if (vError == udE_Success)
   {
     udJSON data;
     if (data.Parse(pFeedsJSON) == udR_Success)
     {
-      udJSONArray *pFeeds = data.Get("feeds").AsArray();
-
-      pInfo->pFeed->m_fetchNow = pInfo->newer && data.Get("more").AsBool();
-      updatedTime = data.Get("lastUpdate").AsDouble();
-
-      if (updatedTime != 0.0)
-      {
-        if (pInfo->newer)
-          pInfo->pFeed->m_newestFeedUpdate = updatedTime;
-        else
-          pInfo->pFeed->m_oldestFeedUpdate = updatedTime;
-      }
-
-      if (!pFeeds)
-        goto epilogue;
-
+      udJSONArray *pFeeds = data.AsArray();
       for (size_t i = 0; i < pFeeds->length; ++i)
       {
-        udJSON *pNode = pFeeds->GetElement(i);
-
-        udUUID uuid;
-        if (udUUID_SetFromString(&uuid, pNode->Get("feedid").AsString()) != udR_Success)
-          continue;
-
+        udJSONArray *pNode = pFeeds->GetElement(i)->AsArray();
         vcLiveFeedItem *pFeedItem = nullptr;
 
-        udLockMutex(pInfo->pFeed->m_pMutex);
+        //udUUID uuid;
+        //if (udUUID_SetFromString(&uuid, pNode->GetElement(3)->AsString()) != udR_Success)
+        //  continue;
+
+        const char *uuid = pNode->GetElement(3)->AsString();
+        const char *type = pNode->GetElement(4)->AsString();
 
         size_t j = 0;
         for (; j < pInfo->pFeed->m_feedItems.length; ++j)
         {
           vcLiveFeedItem *pCachedFeedItem = pInfo->pFeed->m_feedItems[j];
-
-          if (uuid == pCachedFeedItem->uuid)
+        
+          if (udStrEqual(uuid, pCachedFeedItem->uuid))
           {
             pFeedItem = pCachedFeedItem;
             break;
           }
         }
 
-        udDouble3 newPositionLatLong = pNode->Get("geometry.coordinates").AsDouble3();
-        double updated = pNode->Get("updated").AsDouble();
+        udDouble3 newPositionLatLong = udDouble3::create(pNode->GetElement(0)->AsDouble(), pNode->GetElement(1)->AsDouble(), 0.0);// pNode->Get("geometry.coordinates").AsDouble3();
+        //double updated = pNode->Get("updated").AsDouble();
+        //pFeedItem->count++;
 
         if (pFeedItem == nullptr)
         {
           pFeedItem = udAllocType(vcLiveFeedItem, 1, udAF_Zero);
-          pFeedItem->lodLevels.Init(4);
-          pFeedItem->uuid = uuid;
+
+          vcLineRenderer_CreateLine(&pFeedItem->pLine);
+
+          pFeedItem->label.backColourRGBA = 0x7f000000;
+          pFeedItem->label.textColourRGBA = 0xffffffff;
+          pFeedItem->label.pSceneItem = pInfo->pFeed;
+          pFeedItem->label.pText;
+          //pFeedItem->justSpawned = true;
+          //pFeedItem->lodLevels.Init(4);
+          //pFeedItem->uuid = uuid;
+          udStrcpy(pFeedItem->uuid, uuid);
+          udStrcpy(pFeedItem->type, type);
           udLockMutex(pInfo->pFeed->m_pMutex);
           pInfo->pFeed->m_feedItems.PushBack(pFeedItem);
           udReleaseMutex(pInfo->pFeed->m_pMutex);
 
           pFeedItem->previousPositionLatLong = newPositionLatLong;
+          //pFeedItem->displayPosition = udDouble3::zero();
           pFeedItem->tweenAmount = 1.0f;
         }
 
-        udDouble3 dir = newPositionLatLong - pFeedItem->previousPositionLatLong;
-        pFeedItem->calculateHeadingPitch = pNode->Get("data.orientation").IsVoid();
-
-        if (dir.x != 0 || dir.y != 0 || dir.z != 0)
+        if (pFeedItem->count < MAX_KEY_FRAME_COUNT - 1)
         {
-          pFeedItem->tweenAmount = 0;
-          pFeedItem->previousPositionLatLong = pFeedItem->livePositionLatLong;
+          pFeedItem->displayPositions[pFeedItem->count] = udGeoZone_LatLongToCartesian(pInfo->pProgramState->geozone, newPositionLatLong, false);
+          pFeedItem->displayPositions[pFeedItem->count] = vcRender_QueryMapAtCartesian(pInfo->pProgramState->pActiveViewport->pRenderContext, pFeedItem->displayPositions[pFeedItem->count]) + hackDisplayOffsetAmount;
+          pFeedItem->count++;
         }
-
-        if (!pFeedItem->calculateHeadingPitch)
-        {
-          pFeedItem->headingPitch.x = UD_DEG2RAD(pNode->Get("data.orientation.heading").AsDouble());
-          pFeedItem->headingPitch.y = UD_DEG2RAD(pNode->Get("data.orientation.pitch").AsDouble());
-          // roll not handled: pNode->Get("data.orientation.roll").AsDouble();
-        }
-
-        pFeedItem->lastUpdated = updated;
-        pFeedItem->visible = true; // Just got updated
-
-        pFeedItem->minBoundingRadius = pNode->Get("display.minBoundingRadius").AsDouble(1.0);
-
-        udJSONArray *pLODS = pNode->Get("display.lods").AsArray();
-
-        if (pLODS != nullptr)
-        {
-          if (pFeedItem->lodLevels.length > pLODS->length)
-            vcLiveFeedItem_ClearLODs(pFeedItem);
-
-          pFeedItem->lodLevels.GrowBack(pLODS->length - pFeedItem->lodLevels.length);
-
-          // We just need to confirm the info is basically the same
-          for (size_t lodLevelIndex = 0; lodLevelIndex < pLODS->length; ++lodLevelIndex)
-          {
-            udJSON *pLOD = pLODS->GetElement(lodLevelIndex);
-            vcLiveFeedItemLOD &lodRef = pFeedItem->lodLevels[lodLevelIndex];
-
-            lodRef.distance = pLOD->Get("distance").AsDouble();
-            lodRef.sspixels = pLOD->Get("sspixels").AsDouble();
-
-            const udJSON &modelObj = pLOD->Get("model");
-            if (modelObj.IsObject())
-            {
-              if (udStrEquali(modelObj.Get("type").AsString(), "vsm") && !udStrEquali(lodRef.pModelAddress, modelObj.Get("url").AsString()))
-              {
-                udFree(lodRef.pModelAddress);
-                lodRef.pModelAddress = udStrdup(modelObj.Get("url").AsString());
-                lodRef.pModel = nullptr;
-              }
-            }
-
-            const udJSON &labelObj = pLOD->Get("label");
-            if (labelObj.IsObject())
-            {
-              // Was there a label before?
-              if (lodRef.pLabelInfo == nullptr)
-                lodRef.pLabelInfo = udAllocType(vcLabelInfo, 1, udAF_Zero);
-
-              lodRef.pLabelInfo->backColourRGBA = vcIGSW_BGRAToRGBAUInt32(udStrAtou(labelObj.Get("bgcolor").AsString("7F000000"), nullptr, 16));
-              lodRef.pLabelInfo->textColourRGBA = vcIGSW_BGRAToRGBAUInt32(udStrAtou(labelObj.Get("color").AsString("FFFFFFFF"), nullptr, 16));
-
-              if ((lodRef.pLabelInfo->textColourRGBA & 0xFF000000) == 0)
-                lodRef.pLabelInfo->textColourRGBA |= 0xFF000000; // If alpha is 0, set it to full
-
-              if ((lodRef.pLabelInfo->backColourRGBA & 0xFF000000) == 0 && (lodRef.pLabelInfo->backColourRGBA & 0xFFFFFF) != 0)
-                lodRef.pLabelInfo->backColourRGBA |= 0x7F000000; // If alpha is 0 and there is colour, set it to half alpha?
-
-              udFree(lodRef.pLabelText);
-              lodRef.pLabelText = udStrdup(labelObj.Get("text").AsString("[?]"));
-              lodRef.pLabelInfo->pText = lodRef.pLabelText;
-              lodRef.pLabelInfo->pSceneItem = pInfo->pFeed;
-              lodRef.pLabelInfo->sceneItemInternalId = j + 1;
-            }
-
-            const udJSON &pinObj = pLOD->Get("pin");
-            if (pinObj.IsObject())
-            {
-              udFree(lodRef.pPinIcon);
-              lodRef.pPinIcon = udStrdup(pinObj.Get("image").AsString());
-            }
-          }
-        }
-
-        pFeedItem->livePositionLatLong = newPositionLatLong;
-
-        udReleaseMutex(pInfo->pFeed->m_pMutex);
       }
     }
   }
 
-epilogue:
+ // udReleaseMutex(pInfo->pFeed->m_pMutex);
+
+//epilogue:
   udServerAPI_ReleaseResult(&pFeedsJSON);
 
   pInfo->pFeed->m_loadStatus = vcSLS_Loaded;
@@ -303,6 +589,15 @@ vcLiveFeed::vcLiveFeed(vcProject *pProject, udProjectNode *pNode, vcState *pProg
   OnNodeUpdate(pProgramState);
 
   m_loadStatus = vcSLS_Pending;
+
+  vcPolygonModel_CreateFromURL(&pCarModel, "asset://assets//models//Car//car low poly.obj", pProgramState->pWorkerPool);
+  vcPolygonModel_CreateFromURL(&pTaxiModel, "asset://assets//models//Taxi//13914_Taxi_v2_L1.obj", pProgramState->pWorkerPool);
+  vcPolygonModel_CreateFromURL(&pBusModel, "asset://assets//models//Bus//bus.obj", pProgramState->pWorkerPool);
+  vcPolygonModel_CreateFromURL(&pHGVModel, "asset://assets//models//HGV//model.obj", pProgramState->pWorkerPool);
+  vcPolygonModel_CreateFromURL(&pMotorcycleModel, "asset://assets//models//Motorcycle//model.obj", pProgramState->pWorkerPool);
+  vcPolygonModel_CreateFromURL(&pPrivateHireModel, "asset://assets//models//PrivateHire//model.obj", pProgramState->pWorkerPool);
+  vcPolygonModel_CreateFromURL(&pAirQualityStationModel, "asset://assets//models//AirQualityStation//model.obj", pProgramState->pWorkerPool);
+  vcPolygonModel_CreateFromURL(&pCCTVModel, "asset://assets//models//CCTV//model.obj", pProgramState->pWorkerPool);
 }
 
 void vcLiveFeed::OnNodeUpdate(vcState *pProgramState)
@@ -324,17 +619,54 @@ void vcLiveFeed::OnNodeUpdate(vcState *pProgramState)
   ChangeProjection(pProgramState->geozone);
 }
 
+#include "vcInternalModels.h"
+#include <math.h>
+
+
 void vcLiveFeed::AddToScene(vcState *pProgramState, vcRenderData *pRenderData)
 {
+  udDouble4x4 transposedViewProjection = udTranspose(pProgramState->pActiveViewport->camera.matrices.viewProjection);
+  frustumPlanes[0] = transposedViewProjection.c[3] + transposedViewProjection.c[0]; // Left
+  frustumPlanes[1] = transposedViewProjection.c[3] - transposedViewProjection.c[0]; // Right
+  frustumPlanes[2] = transposedViewProjection.c[3] + transposedViewProjection.c[1]; // Bottom
+  frustumPlanes[3] = transposedViewProjection.c[3] - transposedViewProjection.c[1]; // Top
+  frustumPlanes[4] = transposedViewProjection.c[3] + transposedViewProjection.c[2]; // Near
+  frustumPlanes[5] = transposedViewProjection.c[3] - transposedViewProjection.c[2]; // Far
+  // Normalize the planes
+  for (int j = 0; j < 6; ++j)
+    frustumPlanes[j] /= udMag3(frustumPlanes[j]);
+
+  udLockMutex(m_pMutex);
+
+  // draw CCTV
+  udFloat4 cctvColour = udFloat4::create(1, 1, 1, 1);
+  size_t j = 0;
+  for (; j < cctv.length; ++j)
+  {
+    pRenderData->polyModels.PushBack({ vcRenderPolyInstance::RenderType_Polygon, vcRenderPolyInstance::RenderFlags_None, pCCTVModel, cctv[j].transform, nullptr, cctvColour, vcGLSCM_Back, true, this, (uint64_t)(j + 1) });
+  }
+
+  // draw air stations
+  udFloat4 airStationColour = udFloat4::create(1, 1, 1, 1);
+  size_t k = 0;
+  for (; k < airQualityStations.length; ++k)
+  {
+    pRenderData->polyModels.PushBack({ vcRenderPolyInstance::RenderType_Polygon, vcRenderPolyInstance::RenderFlags_None, pAirQualityStationModel, airQualityStations[k].transform, nullptr, airStationColour, vcGLSCM_Back, true, this, (uint64_t)(j + k + 1) });
+  }
+
   if (!m_visible)
     return;
 
   double now = udGetEpochSecsUTCf();
-  double recently = now - m_decayFrequency;
 
-  if (m_loadStatus != vcSLS_Loading && ((now >= m_lastFeedSync + m_updateFrequency) || (now - m_decayFrequency < m_oldestFeedUpdate) || m_fetchNow))
+  //double recently = now - m_decayFrequency;
+
+  static bool gotData = false;
+
+  if (!gotData && (m_loadStatus != vcSLS_Loading && ((now >= m_lastFeedSync + m_updateFrequency) || (now - m_decayFrequency < m_oldestFeedUpdate) || m_fetchNow)))
   {
     m_loadStatus = vcSLS_Loading;
+    gotData = true;
 
     vcLiveFeedUpdateInfo *pInfo = udAllocType(vcLiveFeedUpdateInfo, 1, udAF_Zero);
     pInfo->pProgramState = pProgramState;
@@ -344,140 +676,169 @@ void vcLiveFeed::AddToScene(vcState *pProgramState, vcRenderData *pRenderData)
     m_fetchNow = false;
 
     udWorkerPool_AddTask(pProgramState->pWorkerPool, vcLiveFeed_UpdateFeed, pInfo);
+
+    vcLiveFeedUpdateInfo *pInfo2 = udAllocType(vcLiveFeedUpdateInfo, 1, udAF_Zero);
+    pInfo2->pProgramState = pProgramState;
+    pInfo2->pFeed = this;
+    pInfo2->newer = ((now >= m_lastFeedSync + m_updateFrequency) || m_fetchNow);
+
+    udWorkerPool_AddTask(pProgramState->pWorkerPool, vcLiveFeed_GenerateDensityMapWT, pInfo2, false, vcLiveFeed_GenerateDensityMapMT);
+    udWorkerPool_AddTask(pProgramState->pWorkerPool, vcLiveFeed_GenerateAirStationPointsWT, pInfo2, false, vcLiveFeed_GenerateAirStationPointsMT);
+    udWorkerPool_AddTask(pProgramState->pWorkerPool, vcLiveFeed_GenerateCCTVPointsWT, pInfo2, false, vcLiveFeed_GenerateCCTVPointsMT);
+
+    // memory leak
   }
+
+
+  //printf("Selected Item: %zu\n", m_selectedItem);
 
   m_visibleItems = 0;
 
-  udLockMutex(m_pMutex);
-  for (size_t i = 0; i < m_feedItems.length; ++i)
+  static int skipId = -1;
+  size_t i = 0;
+  for (; i < m_feedItems.length; ++i)
   {
     vcLiveFeedItem *pFeedItem = m_feedItems[i];
 
-    // If its not visible or its been a while since it was visible
-    if (!pFeedItem->visible || pFeedItem->lastUpdated < recently)
-    {
-      pFeedItem->visible = false;
+    if (pFeedItem->count == 0)
       continue;
-    }
+
+    if (skipId != -1 && i != skipId)
+      continue;
+
+    //if (m_selectedItem != 0 && IsSubitemSelected(i + 1))
+    //  continue;
+
+    //if (i != 5000)
+    //  continue;
+
+    pFeedItem->time += pProgramState->deltaTime;
+
+    double intPart = 0.0;
+    double lerpT = modf(pFeedItem->time, &intPart);
+    int index = (int)(pFeedItem->time) % pFeedItem->count;
+    int nextIndex = udMin((int)(index + 1), pFeedItem->count); // dont wrap
 
     udDouble3 cameraPosition = pProgramState->pActiveViewport->camera.position;
-
-    udDouble3 previousLerpedLatLong = pFeedItem->previousLerpedLatLong;
-
-    pFeedItem->tweenAmount = m_tweenPositionAndOrientation ? udMin(1.0, pFeedItem->tweenAmount + pProgramState->deltaTime * 0.02) : 1.0;
-    udDouble3 lerpedLatLong = udLerp(pFeedItem->previousPositionLatLong, pFeedItem->livePositionLatLong, pFeedItem->tweenAmount);
-    pFeedItem->displayPosition = udGeoZone_LatLongToCartesian(pProgramState->geozone, lerpedLatLong, true);
-    pFeedItem->previousLerpedLatLong = lerpedLatLong;
-
     double distanceSq = udMagSq3(pFeedItem->displayPosition - cameraPosition);
 
-    if (distanceSq > m_maxDisplayDistance * m_maxDisplayDistance)
-      continue; // Don't really want to mark !visible because it might be again soon
+    bool selected = (m_selected && m_selectedItem == i + j + k + 1);
 
-    // Select & Render LOD here
-    for (size_t lodI = 0; lodI < pFeedItem->lodLevels.length; ++lodI)
+    pFeedItem->refreshHeightTime -= pProgramState->deltaTime;
+    if (selected || (pFeedItem->refreshHeightTime <= 0.0f))
     {
-      vcLiveFeedItemLOD &lodRef = pFeedItem->lodLevels[lodI];
-
-      if (lodI < pFeedItem->lodLevels.length - 1 && distanceSq != 0.0 && distanceSq / m_labelLODModifier > (lodRef.distance*lodRef.distance) / (pFeedItem->minBoundingRadius * pFeedItem->minBoundingRadius))
-        continue;
-
-      if (lodRef.sspixels != 0.0)
+      pFeedItem->justSpawned = false;
+      pFeedItem->refreshHeightTime = 20.0f;
+      if (selected || distanceSq < (500 * 500)) // only if its close
       {
-        // See if its within the threshold
-        //continue; // if not in threshold
-      }
-
-      if (lodRef.pModelAddress != nullptr)
-      {
-        vcPolygonModel *pModel = lodRef.pModel;
-
-        if (pModel == nullptr) // Add to cache
+        for (int d = 0; d < pFeedItem->count; ++d)
         {
-          vcLiveFeedPolyCache *pItem = nullptr;
-          for (size_t pI = 0; pI < m_polygonModels.length; ++pI)
-          {
-            if (udStrEquali(m_polygonModels[pI].pModelURL, lodRef.pModelAddress))
-            {
-              pItem = &m_polygonModels[pI];
-              break;
-            }
-          }
-
-          if (pItem)
-          {
-            if (pItem->loadStatus == vcLiveFeedPolyCache::LS_Downloaded)
-            {
-              pItem->loadStatus = vcLiveFeedPolyCache::LS_Loaded;
-              if (vcPolygonModel_CreateFromVSMFInMemory(&pItem->pModel, (char*)pItem->pModelData, (int)pItem->modelDataLength, pProgramState->pWorkerPool) != udR_Success)
-              {
-                // TODO: (EVC-570) retry? draw some error mesh?
-                pItem->loadStatus = vcLiveFeedPolyCache::LS_Failed;
-              }
-
-              udFree(pItem->pModelData);
-              pItem->modelDataLength = 0;
-            }
-
-            pModel = pItem->pModel;
-          }
-          else
-          {
-            m_polygonModels.PushBack({ udStrdup(lodRef.pModelAddress), nullptr, vcLiveFeedPolyCache::LS_InQueue, nullptr, 0 });
-            udWorkerPool_AddTask(pProgramState->pWorkerPool, vcLiveFeed_LoadModel, this, false);
-          }
-
-          lodRef.pModel = pModel;
-        }
-
-        if (pModel != nullptr)
-        {
-          if (pFeedItem->calculateHeadingPitch && udMagSq3(lerpedLatLong - previousLerpedLatLong) > 0.000001f) // small amount of lat/lon movement
-            pFeedItem->headingPitch = vcGIS_GetHeadingPitchFromLatLong(pProgramState->geozone, previousLerpedLatLong, lerpedLatLong);
-
-          // Calculate a transform for the model
-          udDoubleQuat worldRotation = vcGIS_HeadingPitchToQuaternion(pProgramState->geozone, pFeedItem->displayPosition, pFeedItem->headingPitch);
-          udDouble4x4 worldTransform = udDouble4x4::identity();
-
-          if (pProgramState->settings.maptiles.mapEnabled && m_snapToMap)
-          {
-            // Position + orient along map surface
-            udDouble3 mapNormal = {};
-            pFeedItem->displayPosition = vcRender_QueryMapAtCartesian(pProgramState->pActiveViewport->pRenderContext, pFeedItem->displayPosition, nullptr, &mapNormal);
-
-            // Create an axis, with the 'mapNormal' as the up-axis
-            udDouble3 z = mapNormal;
-            udDouble3 y = udNormalize3(worldRotation.apply({ 0, 1, 0 }));
-            udDouble3 x = udNormalize3(udCross3(y, mapNormal));
-            y = udNormalize3(udCross3(z, x)); // re-orient about 'mapNormal'
-            worldTransform = { {{ x.x,    x.y,    x.z,    0,
-                                  y.x,    y.y,    y.z,    0,
-                                  z.x,    z.y,    z.z,    0,
-                                  pFeedItem->displayPosition.x, pFeedItem->displayPosition.y, pFeedItem->displayPosition.z, 1 }} };
-          }
-          else
-          {
-            worldTransform = udDouble4x4::rotationQuat(worldRotation, pFeedItem->displayPosition);
-          }
-
-          pRenderData->polyModels.PushBack({ vcRenderPolyInstance::RenderType_Polygon, vcRenderPolyInstance::RenderFlags_None, { pModel }, worldTransform, nullptr, udFloat4::one(), vcGLSCM_Back, true, this, (uint64_t)(i + 1) });
+          pFeedItem->displayPositions[d] = vcRender_QueryMapAtCartesian(pProgramState->pActiveViewport->pRenderContext, pFeedItem->displayPositions[d]) + hackDisplayOffsetAmount;
         }
       }
+    }
 
-      if (lodRef.pLabelInfo != nullptr)
+    int indexA = udMin(index, pFeedItem->count - 1);
+    int indexB = udMin(nextIndex, pFeedItem->count - 1);
+
+    // calculate rotation
+    udDouble3 lastDisplayPosition = pFeedItem->displayPosition;
+    udQuaternion<double> rotation = udQuaternion<double>::identity();
+    pFeedItem->displayPosition = udLerp(pFeedItem->displayPositions[indexA], pFeedItem->displayPositions[indexB], lerpT);
+
+    // visibility test
+    udDouble3 bounds = udDouble3::create(10, 10, 10);
+    if (vcQuadTree_FrustumTest(pFeedItem->displayPosition, bounds) == -1)
+      continue;
+
+    udFloat4 modelColour = udFloat4::one();
+    uint64_t id = (uint64_t)(i + j + k + 1);
+
+    if (distanceSq <= 2500 * 2500) // only draw the model if its close
+    {
+      if (udMagSq3(lastDisplayPosition - pFeedItem->displayPosition) > 0.01) // at least small amount movement
+        rotation = udDouble4x4::lookAt(lastDisplayPosition, pFeedItem->displayPosition).extractQuaternion() * rotation;
+
+      // HANDLE VEHICLE MODELS HERE
+      vcPolygonModel *pModel;
+      udDouble4x4 worldTransform;
+      if (udStrEqual(pFeedItem->type, "Car"))
       {
-        lodRef.pLabelInfo->worldPosition = pFeedItem->displayPosition;
-        pRenderData->labels.PushBack(lodRef.pLabelInfo);
+        udDoubleQuat orientModel = udDoubleQuat::create(UD_PIf, 0, 0) * udDoubleQuat::create(0.0, UD_PIf * 0.5, 0.0); // orient the model correctly
+        worldTransform = udDouble4x4::scaleUniform(0.025f, pFeedItem->displayPosition) * udDouble4x4::rotationQuat(rotation * orientModel);
+        pModel = pCarModel;
+      }
+      else if (udStrEqual(pFeedItem->type, "Bus"))
+      {
+        udDoubleQuat orientModel = udDoubleQuat::create(UD_PIf, 0, 0) * udDoubleQuat::create(0.0, UD_PIf * 0.5, 0.0); // orient the model correctly
+        worldTransform = udDouble4x4::scaleUniform(0.065f, pFeedItem->displayPosition) * udDouble4x4::rotationQuat(rotation * orientModel);
+        pModel = pBusModel;
+      }
+      else if (udStrEqual(pFeedItem->type, "Taxi"))
+      {
+        udDoubleQuat orientModel = udDoubleQuat::create(UD_PIf * -0.5f, 0, 0); // orient the model correctly
+        worldTransform = udDouble4x4::scaleUniform(0.04f, pFeedItem->displayPosition) * udDouble4x4::rotationQuat(rotation * orientModel);
+        pModel = pTaxiModel;
+      }
+      else if (udStrEqual(pFeedItem->type, "Private Hire"))
+      {
+        worldTransform = udDouble4x4::scaleUniform(0.025f, pFeedItem->displayPosition) * udDouble4x4::rotationQuat(rotation);
+        pModel = pPrivateHireModel;
+      }
+      else if (udStrEqual(pFeedItem->type, "HGV"))
+      {
+        worldTransform = udDouble4x4::scaleUniform(0.025f, pFeedItem->displayPosition) * udDouble4x4::rotationQuat(rotation);
+        pModel = pHGVModel;
+      }
+      else if (udStrEqual(pFeedItem->type, "Motorcycle"))
+      {
+        worldTransform = udDouble4x4::scaleUniform(0.025f, pFeedItem->displayPosition) * udDouble4x4::rotationQuat(rotation);
+        pModel = pMotorcycleModel;
+      }
+      else
+      {
+        worldTransform = udDouble4x4::scaleUniform(0.025f, pFeedItem->displayPosition) * udDouble4x4::rotationQuat(rotation);
+        pModel = gInternalModels[vcInternalModelType_Sphere];
       }
 
-      if (lodRef.pPinIcon != nullptr)
-        pRenderData->pins.PushBack({ pFeedItem->displayPosition, lodRef.pPinIcon, 1, this });
+      pRenderData->polyModels.PushBack({ vcRenderPolyInstance::RenderType_Polygon, vcRenderPolyInstance::RenderFlags_None, pModel, worldTransform, nullptr, modelColour, vcGLSCM_Back, true, this, id });
+    }
 
-      break; // We got to the end so we should stop
+    //if (m_selectedItem == i)
+    if (pFeedItem->count > 1)
+    {
+      if (!pFeedItem->lineCalculated)
+      {
+        pFeedItem->lineCalculated = true;
+        vcLineRenderer_UpdatePoints(pFeedItem->pLine, pFeedItem->displayPositions, pFeedItem->count, modelColour, 2.0f, false);
+      }
+      pRenderData->lines.PushBack(pFeedItem->pLine);
+    }
+
+    if (selected)
+    {
+      double totalDist = 0.0;
+      for (int p = 1; p < pFeedItem->count; ++p)
+      {
+        totalDist += udMag3(pFeedItem->displayPositions[p] - pFeedItem->displayPositions[p - 1]);
+      }
+
+      float duration = 20.0f;  // we know its over 20s
+      float kph = ((float)totalDist / duration) * 60 * 60 / 1000;
+
+      udFree(pFeedItem->label.pText);
+
+      udSprintf(&pFeedItem->label.pText, "Type: %s\nSpeed: %0.2f KM/H\n%s", pFeedItem->type, kph, pFeedItem->uuid);
+
+
+      pFeedItem->label.worldPosition = pFeedItem->displayPosition;
+      pRenderData->labels.PushBack(&pFeedItem->label);
     }
 
     ++m_visibleItems;
   }
+
+
   udReleaseMutex(m_pMutex);
 }
 
@@ -579,11 +940,15 @@ void vcLiveFeed::HandleSceneExplorerUI(vcState *pProgramState, size_t * /*pItemI
 void vcLiveFeed::Cleanup(vcState * /*pProgramState*/)
 {
   udLockMutex(m_pMutex);
+
+  airQualityStations.Deinit();
+  cctv.Deinit();
+
   for (size_t i = 0; i < m_feedItems.length; ++i)
   {
     vcLiveFeedItem *pFeedItem = m_feedItems[i];
 
-    vcLiveFeedItem_ClearLODs(pFeedItem);
+    //vcLiveFeedItem_ClearLODs(pFeedItem);
     udFree(pFeedItem);
   }
 

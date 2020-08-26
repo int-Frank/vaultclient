@@ -1014,7 +1014,7 @@ const uint32_t sphereIndices[] = {
 
 const vcP3N3UV2Vertex *pTubeVertices = (vcP3N3UV2Vertex *)tubeVerticesFltArray;
 const vcP3N3UV2Vertex *pSphereVertices = (vcP3N3UV2Vertex *)sphereVerticesFltArray;
-//const vcP3N3Vertex *pCubeVertices = (vcP3N3Vertex *)cubeVerticesFltArray;
+const vcP3N3Vertex *pCubeVertices = (vcP3N3Vertex *)cubeVerticesFltArray;
 //const vcP3N3Vertex *pCylinderVertices = (vcP3N3Vertex *)cylinderVerticesFltArray;
 
 #endif//vcInternalModelsData_h__

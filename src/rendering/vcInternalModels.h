@@ -15,6 +15,7 @@ enum vcInternalMeshType
   vcInternalMeshType_Billboard,
   vcInternalMeshType_Sphere,
   vcInternalMeshType_Tube,
+  vcInternalMeshType_Cube,
 
   vcInternalMeshType_Count
 };

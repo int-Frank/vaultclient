@@ -8,6 +8,8 @@
 #include "udRenderTarget.h"
 #include "udQueryContext.h"
 
+#include "vcBatchedRenderQueue.h"
+
 #include "vcMesh.h"
 #include "vcFenceRenderer.h"
 #include "vcLabelRenderer.h"
@@ -84,6 +86,19 @@ struct vcPins
   vcSceneItem *pSceneItem;
 };
 
+struct vcInstanceGeometryData
+{
+  udFloat4x4 worldViewProjectionMatrix;
+  udFloat4 colour;
+  udFloat4 objectInfo;
+};
+
+// TODO: move to own class
+struct vcInstancedRenderer
+{
+  vcBatchedRenderQueue<vcInstanceGeometryData> queues;
+};
+
 struct vcRenderData
 {
   vcMouseData mouse;
@@ -101,8 +116,19 @@ struct vcRenderData
   udChunkedArray<vcViewShedData> viewSheds;
   udChunkedArray<vcPins> pins;
 
+  vcBatchedRenderQueue<vcInstanceGeometryData> instancedModels;
+  udChunkedArray<vcInstancedRenderer*> instancedModels2;
+
   vcTexture *pSceneTexture;
   udFloat2 sceneScaling;
+};
+
+struct QueryVisualizationTexture
+{
+  vcTexture *pTexture;
+  udDouble4 boundsLatLon;
+  vcMesh *pMesh;
+  bool visible;
 };
 
 vcFramebuffer *vcRender_GetSceneFramebuffer(vcRenderContext *pRenderContext);

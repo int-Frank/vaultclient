@@ -176,6 +176,31 @@ struct vcRenderContext
   struct
   {
     vcShader *pProgram;
+    vcShaderSampler *uniform_texture;
+    vcShaderSampler *uniform_sceneDepth;
+    vcShaderConstantBuffer *uniform_vertParams;
+    vcShaderConstantBuffer *uniform_fragParams;
+
+    struct
+    {
+      udFloat4x4 modelViewProjection;
+    } vertParams;
+
+    struct
+    {
+      udFloat4x4 inverseModelViewProjection;
+      udFloat4x4 inverseProjection;
+      udFloat4 eyeBoundsA;
+      udFloat4 eyeBoundsB;
+      udFloat4 eyeBoundsC;
+      udFloat4 eyeBoundsD;
+    } fragParams;
+
+  } projectedTextureShader;
+
+  struct
+  {
+    vcShader *pProgram;
     vcShaderSampler *uniform_colour;
     vcShaderConstantBuffer *uniform_params;
 
@@ -328,6 +353,13 @@ udResult vcRender_Init(vcState *pProgramState, vcRenderContext **ppRenderContext
   UD_ERROR_CHECK(vcRender_LoadShaders(pRenderContext, pProgramState->pWorkerPool));
   UD_ERROR_CHECK(vcRender_ResizeScene(pProgramState, pRenderContext, sceneResolution.x, sceneResolution.y));
 
+  
+  //vcPolygonModel_CreateFromURL(&pTestInstanceModel, "D://Vault//Datasets//OBJ//car1//fbx//car low poly.obj", pProgramState->pWorkerPool);
+
+  //vcPolygonModel_CreateFromURL(&pTestInstanceModel, "D://git//vaultclient//builds//assets//BUS-YuZfXlY180//bus.obj", pProgramState->pWorkerPool);
+  //UD_ERROR_CHECK(vcPolygonModel_CreateFromRawVertexData(&pTestInstanceModel, (void *)cubeVerticesFltArray, (uint32_t)udLengthOf(cubeVerticesFltArray), vcP3N3UV2VertexLayout, (int)(udLengthOf(vcP3N3UV2VertexLayout)), cubeIndices, (uint32_t)udLengthOf(cubeIndices), true));
+  //pTestInstanceModel = gInternalModels[vcInternalModelType_Cube];
+
   *ppRenderContext = pRenderContext;
   pRenderContext = nullptr;
   result = udR_Success;
@@ -361,6 +393,17 @@ udResult vcRender_LoadShaders(vcRenderContext *pRenderContext, udWorkerPool *pWo
       vcShader_GetSamplerIndex(&pRenderContext->visualizationShader.uniform_depth, pRenderContext->visualizationShader.pProgram, "sceneDepth");
       vcShader_GetConstantBuffer(&pRenderContext->visualizationShader.uniform_vertParams, pRenderContext->visualizationShader.pProgram, "u_vertParams", sizeof(pRenderContext->visualizationShader.vertParams));
       vcShader_GetConstantBuffer(&pRenderContext->visualizationShader.uniform_fragParams, pRenderContext->visualizationShader.pProgram, "u_fragParams", sizeof(pRenderContext->visualizationShader.fragParams));
+    }
+  ), udR_InternalError);
+
+  UD_ERROR_IF(!vcShader_CreateFromFileAsync(&pRenderContext->projectedTextureShader.pProgram, pWorkerPool, "asset://assets/shaders/projectedTextureVertexShader", "asset://assets/shaders/projectedTextureFragmentShader", vcP3UV2VertexLayout,
+    [pRenderContext](void *)
+    {
+      vcShader_Bind(pRenderContext->projectedTextureShader.pProgram);
+      vcShader_GetSamplerIndex(&pRenderContext->projectedTextureShader.uniform_texture, pRenderContext->projectedTextureShader.pProgram, "texture");
+      vcShader_GetSamplerIndex(&pRenderContext->projectedTextureShader.uniform_sceneDepth, pRenderContext->projectedTextureShader.pProgram, "sceneDepth");
+      vcShader_GetConstantBuffer(&pRenderContext->projectedTextureShader.uniform_vertParams, pRenderContext->projectedTextureShader.pProgram, "u_vertParams", sizeof(pRenderContext->projectedTextureShader.vertParams));
+      vcShader_GetConstantBuffer(&pRenderContext->projectedTextureShader.uniform_fragParams, pRenderContext->projectedTextureShader.pProgram, "u_fragParams", sizeof(pRenderContext->projectedTextureShader.fragParams));
     }
   ), udR_InternalError);
 
@@ -648,8 +691,8 @@ udResult vcRender_ResizeScene(vcState *pProgramState, vcRenderContext *pRenderCo
 
   for (int i = 0; i < vcRender_RenderBufferCount; ++i)
   {
-    UD_ERROR_CHECK(vcTexture_Create(&pRenderContext->gBuffer[i].pColour, widthIncr, heightIncr, nullptr, vcTextureFormat_RGBA16F, vcTFM_Linear, vcTCF_RenderTarget));
-    UD_ERROR_CHECK(vcTexture_Create(&pRenderContext->gBuffer[i].pNormal, widthIncr, heightIncr, nullptr, vcTextureFormat_RGBA16F, vcTFM_Linear, vcTCF_RenderTarget | vcTCF_AsynchronousRead));
+    UD_ERROR_CHECK(vcTexture_Create(&pRenderContext->gBuffer[i].pColour, widthIncr, heightIncr, nullptr, vcTextureFormat_RGBA32F, vcTFM_Linear, vcTCF_RenderTarget));
+    UD_ERROR_CHECK(vcTexture_Create(&pRenderContext->gBuffer[i].pNormal, widthIncr, heightIncr, nullptr, vcTextureFormat_RGBA32F, vcTFM_Linear, vcTCF_RenderTarget | vcTCF_AsynchronousRead));
     UD_ERROR_CHECK(vcTexture_Create(&pRenderContext->gBuffer[i].pDepth, widthIncr, heightIncr, nullptr, vcTextureFormat_D32F, vcTFM_Nearest, vcTCF_RenderTarget));
     UD_ERROR_IF(!vcFramebuffer_Create(&pRenderContext->gBuffer[i].pFramebuffer, pRenderContext->gBuffer[i].pColour, pRenderContext->gBuffer[i].pDepth, 0, pRenderContext->gBuffer[i].pNormal), udR_InternalError);
   }
@@ -691,38 +734,75 @@ epilogue:
 //float k = Float16ToFloat32(0b1000000000000000); //-0
 //float l = Float16ToFloat32(0b0111110000000000); //inf
 //float m = Float16ToFloat32(0b1111110000000000); //-inf
-float Float16ToFloat32(uint16_t float16)
-{
-  uint16_t sign_bit = (float16 & 0b1000000000000000) >> 15;
-  uint16_t exponent = (float16 & 0b0111110000000000) >> 10;
-  uint16_t fraction = (float16 & 0b0000001111111111) >> 0;
+//float Float16ToFloat32(uint16_t float16)
+//{
+//  uint16_t sign_bit = (float16 & 0b1000000000000000) >> 15;
+//  uint16_t exponent = (float16 & 0b0111110000000000) >> 10;
+//  uint16_t fraction = (float16 & 0b0000001111111111) >> 0;
+//
+//  float sign = (sign_bit) ? -1.0f : 1.0f;
+//  float m = 1.0f;
+//  uint16_t exponentBias = 15;
+//
+//  // The exponents '00000' and '11111' are interpreted specially
+//  if (exponent == 31)
+//    return sign * INFINITY;
+//
+//  if (exponent == 0)
+//  {
+//    m = 0.0f;
+//    exponentBias = 14;
+//  }
+//
+//  return sign * udPow(2.0f, float(exponent - exponentBias)) * (m + (fraction / 1024.0f));
+//}
 
-  float sign = (sign_bit) ? -1.0f : 1.0f;
-  float m = 1.0f;
-  uint16_t exponentBias = 15;
-
-  // The exponents '00000' and '11111' are interpreted specially
-  if (exponent == 31)
-    return sign * INFINITY;
-
-  if (exponent == 0)
-  {
-    m = 0.0f;
-    exponentBias = 14;
-  }
-
-  return sign * udPow(2.0f, float(exponent - exponentBias)) * (m + (fraction / 1024.0f));
-}
+//uint16_t float16(const float in) {
+//  uint32_t inu = *((uint32_t *)&in);
+//  uint32_t t1;
+//  uint32_t t2;
+//  uint32_t t3;
+//
+//  t1 = inu & 0x7fffffff;                 // Non-sign bits
+//  t2 = inu & 0x80000000;                 // Sign bit
+//  t3 = inu & 0x7f800000;                 // Exponent
+//
+//  t1 >>= 13;                             // Align mantissa on MSB
+//  t2 >>= 16;                             // Shift sign bit into position
+//
+//  t1 -= 0x1c000;                         // Adjust bias
+//
+//  t1 = (t3 > 0x38800000) ? 0 : t1;       // Flush-to-zero
+//  t1 = (t3 < 0x8e000000) ? 0x7bff : t1;  // Clamp-to-max
+//  t1 = (t3 == 0 ? 0 : t1);               // Denormals-as-zero
+//
+//  t1 |= t2;                              // Re-insert sign bit
+//
+//  return (uint16_t)t1;
+//};
 
 float vcRender_EncodeModelId(uint32_t id)
 {
-  return float(id & 0xffff) / 0xffff;
+  // force it to 16 bit precsion
+  float float32 = float(id & 0xffffffff) / 0xffffffff;
+
+  //uint32_t x = *((uint32_t *)&float32);
+  //uint16_t f162 = ((x >> 16) & 0x8000) | ((((x & 0x7f800000) - 0x38000000) >> 13) & 0x7c00) | ((x >> 13) & 0x03ff);
+  //float f322 = Float16ToFloat32(f162);
+  //
+  //uint16_t f16 = float16(float32);
+  //float f32 = Float16ToFloat32(f16);
+  //return f32;
+  return float32;
 }
 
-void vcRender_DecodeModelId(uint8_t pixelBytes[8], uint16_t *pId, float *pDepth)
+void vcRender_DecodeModelId(uint8_t pixelBytes[16], uint16_t *pId, float *pDepth)
 {
-  *pDepth = udAbs(Float16ToFloat32(uint16_t((pixelBytes[2] & 0xFF) | ((pixelBytes[3] & 0xFF) << 8))));
-  *pId = uint16_t((Float16ToFloat32(uint16_t((pixelBytes[0] & 0xFF) | ((pixelBytes[1] & 0xFF) << 8))) * 0xffff) + 0.5f);
+  uint32_t depthInt = uint32_t((pixelBytes[4] & 0xFF) | uint32_t((pixelBytes[5] & 0xFF) << 8)) | uint32_t((pixelBytes[6] & 0xFF) << 16) | uint32_t((pixelBytes[7] & 0xFF) << 24);
+  *pDepth = udAbs(*((float *)&depthInt));
+  uint32_t idInt = uint32_t((pixelBytes[0] & 0xFF) | (uint32_t)((pixelBytes[1] & 0xFF) << 8)) | (uint32_t)((pixelBytes[2] & 0xFF) << 16) | (uint32_t)((pixelBytes[3] & 0xFF) << 24);
+  float f = *((float*)&idInt);
+  *pId = uint16_t((f * 0xffffffff) + 0.5f);
 }
 
 // Asychronously read a 1x1 region of last frames depth buffer 
@@ -733,7 +813,7 @@ udResult vcRender_AsyncReadFrameDepth(vcRenderContext *pRenderContext)
   if (pRenderContext->currentMouseUV.x < 0 || pRenderContext->currentMouseUV.x > 1 || pRenderContext->currentMouseUV.y < 0 || pRenderContext->currentMouseUV.y > 1)
     return result;
 
-  uint8_t pixelBytes[8] = {};
+  uint8_t pixelBytes[16] = {};
 
   if (pRenderContext->asyncReadTarget != -1)
   {
@@ -967,6 +1047,158 @@ void vcRender_PostProcessPass(vcState *pProgramState, vcRenderContext *pRenderCo
   vcMesh_Render(gInternalMeshes[vcInternalMeshType_ScreenQuad]);
 }
 
+extern int mediaNodeIndex;
+QueryVisualizationTexture densityMap;
+QueryVisualizationTexture airQualityMap;
+QueryVisualizationTexture cctvMap;
+//QueryVisualizationTexture query3;
+
+void vcRender_RenderQueryVisualization(vcState *pProgramState, vcRenderContext *pRenderContext, QueryVisualizationTexture *pTexture)
+{
+  // draw our 'fake' projected texture
+  if (pTexture->pTexture != nullptr && pTexture->visible)
+  {
+    pTexture->visible = false;
+
+    vcGLState_SetDepthStencilMode(vcGLSDM_Always, true);
+    vcGLState_SetBlendMode(vcGLSBM_Interpolative);
+    vcGLState_SetFaceMode(vcGLSFM_Solid, vcGLSCM_None);
+
+    vcShader_Bind(pRenderContext->projectedTextureShader.pProgram);
+
+    vcShader_BindTexture(pRenderContext->projectedTextureShader.pProgram, pTexture->pTexture, 0, pRenderContext->projectedTextureShader.uniform_texture);
+    vcShader_BindTexture(pRenderContext->projectedTextureShader.pProgram, pRenderContext->gBuffer[1 - pRenderContext->activeRenderTarget].pDepth, 1, pRenderContext->projectedTextureShader.uniform_sceneDepth);
+
+    double heightOffset = -10.0;
+    double size = 0.0;
+    udDouble3 ad = (udGeoZone_LatLongToCartesian(pProgramState->geozone, udDouble3::create(pTexture->boundsLatLon.x, pTexture->boundsLatLon.z, -size + heightOffset)));
+    udDouble3 bd = (udGeoZone_LatLongToCartesian(pProgramState->geozone, udDouble3::create(pTexture->boundsLatLon.y, pTexture->boundsLatLon.z, -size + heightOffset)));
+    udDouble3 cd = (udGeoZone_LatLongToCartesian(pProgramState->geozone, udDouble3::create(pTexture->boundsLatLon.x, pTexture->boundsLatLon.w, -size + heightOffset)));
+    udDouble3 dd = (udGeoZone_LatLongToCartesian(pProgramState->geozone, udDouble3::create(pTexture->boundsLatLon.y, pTexture->boundsLatLon.w, -size + heightOffset)));
+                         
+    udDouble3 a2d = (udGeoZone_LatLongToCartesian(pProgramState->geozone, udDouble3::create(pTexture->boundsLatLon.x, pTexture->boundsLatLon.z, size + heightOffset)));
+    udDouble3 b2d = (udGeoZone_LatLongToCartesian(pProgramState->geozone, udDouble3::create(pTexture->boundsLatLon.y, pTexture->boundsLatLon.z, size + heightOffset)));
+    udDouble3 c2d = (udGeoZone_LatLongToCartesian(pProgramState->geozone, udDouble3::create(pTexture->boundsLatLon.x, pTexture->boundsLatLon.w, size + heightOffset)));
+    udDouble3 d2d = (udGeoZone_LatLongToCartesian(pProgramState->geozone, udDouble3::create(pTexture->boundsLatLon.y, pTexture->boundsLatLon.w, size + heightOffset)));
+
+    udDouble3 eyeA = (pProgramState->pActiveViewport->camera.matrices.view * udDouble4::create(ad, 1.0f)).toVector3();
+    udDouble3 eyeB = (pProgramState->pActiveViewport->camera.matrices.view * udDouble4::create(bd, 1.0f)).toVector3();
+    udDouble3 eyeC = (pProgramState->pActiveViewport->camera.matrices.view * udDouble4::create(cd, 1.0f)).toVector3();
+    udDouble3 eyeD = (pProgramState->pActiveViewport->camera.matrices.view * udDouble4::create(dd, 1.0f)).toVector3();
+
+    udDouble3 eyeA2 = (pProgramState->pActiveViewport->camera.matrices.view * udDouble4::create(a2d, 1.0f)).toVector3();
+    udDouble3 eyeB2 = (pProgramState->pActiveViewport->camera.matrices.view * udDouble4::create(b2d, 1.0f)).toVector3();
+    udDouble3 eyeC2 = (pProgramState->pActiveViewport->camera.matrices.view * udDouble4::create(c2d, 1.0f)).toVector3();
+    udDouble3 eyeD2 = (pProgramState->pActiveViewport->camera.matrices.view * udDouble4::create(d2d, 1.0f)).toVector3();
+
+    udFloat3 a = udFloat3::create(eyeA);
+    udFloat3 b = udFloat3::create(eyeB);
+    udFloat3 c = udFloat3::create(eyeC);
+    udFloat3 d = udFloat3::create(eyeD);
+
+    udFloat3 a2 = udFloat3::create(eyeA2);
+    udFloat3 b2 = udFloat3::create(eyeB2);
+    udFloat3 c2 = udFloat3::create(eyeC2);
+    udFloat3 d2 = udFloat3::create(eyeD2);
+
+    //udDouble3::create(-3727193.892163, 13070427.658601, 163.648139)
+    //udDouble3 center = (a + b + c + d) / 4.0f;
+
+    //udDouble3 min = udMin(udMin(udMin(a, b), c), d);
+    //udDouble3 max = udMax(udMax(udMax(a, b), c), d);
+    //udDouble3 bounds = (max - min) * 0.5;
+
+    vcMesh_Destroy(&pTexture->pMesh);
+
+    //if (pMesh == nullptr)
+    {
+      const vcVertexLayoutTypes types[] =
+      {
+        vcVLT_Position3,
+        vcVLT_TextureCoords2,
+      };
+
+      uint32_t vertCount = 36;
+      vcP3UV2Vertex verts[] =
+      {
+        // top
+        { a.x, a.y, a.z, 0, 0},
+        { b.x, b.y, b.z, 1, 0},
+        { c.x, c.y, c.z, 0, 1},
+        { c.x, c.y, c.z, 0, 1},
+        { d.x, d.y, d.z, 1, 1},
+        { b.x, b.y, b.z, 1, 0},
+
+        // bottom
+        { a2.x, a2.y, a2.z, 0, 0},
+        { b2.x, b2.y, b2.z, 1, 0},
+        { c2.x, c2.y, c2.z, 0, 1},
+        { c2.x, c2.y, c2.z, 0, 1},
+        { d2.x, d2.y, d2.z, 1, 1},
+        { b2.x, b2.y, b2.z, 1, 0},
+
+        // left
+        { a.x, a.y, a.z, 0, 0},
+        { c.x, c.y, c.z, 0, 1},
+        { c2.x, c2.y, c2.z, 0, 1},
+        { a.x, a.y, a.z, 0, 0},
+        { a2.x, a2.y, a2.z, 0, 0},
+        { c2.x, c2.y, c2.z, 0, 1},
+
+        // right
+        { b.x, b.y, b.z, 1, 0},
+        { d.x, d.y, d.z, 1, 1},
+        { d2.x, d2.y, d2.z, 1, 1},
+        { b.x, b.y, b.z, 1, 0},
+        { b2.x, b2.y, b2.z, 1, 0},
+        { d2.x, d2.y, d2.z, 1, 1},
+
+        // front
+        { a.x, a.y, a.z, 0, 0},
+        { b.x, b.y, b.z, 1, 0},
+        { b2.x, b2.y, b2.z, 1, 0},
+        { a.x, a.y, a.z, 0, 0},
+        { a2.x, a2.y, a2.z, 0, 0},
+        { b2.x, b2.y, b2.z, 1, 0},
+
+        // back
+        { c.x, c.y, c.z, 0, 1},
+        { d.x, d.y, d.z, 1, 1},
+        { c2.x, c2.y, c2.z, 0, 1},
+        { d.x, d.y, d.z, 1, 1},
+        { d2.x, d2.y, d2.z, 1, 1},
+        { c2.x, c2.y, c2.z, 0, 1},
+
+      };
+
+      vcMesh_Create(&pTexture->pMesh, types, (int)udLengthOf(types), verts, vertCount, nullptr, 0, vcMF_NoIndexBuffer);
+    }
+
+    udDouble4x4 modelViewProjection = pProgramState->pActiveViewport->camera.matrices.projection;// *udDouble4x4::scaleNonUniform(udDouble3::create(bounds.x, bounds.y, 1000.0),
+     // center);
+    udDouble4x4 inversedModelViewProjection = modelViewProjection;
+    inversedModelViewProjection.inverse();
+
+    
+    //pRenderContext->projectedTextureShader.fragParams.eyeBoundsA = udFloat4::create(udFloat3::create(eyeA), 0.0f);
+    //pRenderContext->projectedTextureShader.fragParams.eyeBoundsB = udFloat4::create(udFloat3::create(eyeB), 0.0f);
+    //pRenderContext->projectedTextureShader.fragParams.eyeBoundsC = udFloat4::create(udFloat3::create(eyeC), 0.0f);
+    //pRenderContext->projectedTextureShader.fragParams.eyeBoundsD = udFloat4::create(udFloat3::create(eyeD), 0.0f);
+    pRenderContext->projectedTextureShader.fragParams.inverseProjection = udFloat4x4::create(pProgramState->pActiveViewport->camera.matrices.projection);
+    pRenderContext->projectedTextureShader.fragParams.inverseProjection.inverse();
+
+    pRenderContext->projectedTextureShader.fragParams.eyeBoundsA.x = 1.0f;// renderData.images[0]->colour.w;
+
+    pRenderContext->projectedTextureShader.vertParams.modelViewProjection = udFloat4x4::create(modelViewProjection);
+    pRenderContext->projectedTextureShader.fragParams.inverseModelViewProjection = udFloat4x4::create(inversedModelViewProjection);
+
+    vcShader_BindConstantBuffer(pRenderContext->projectedTextureShader.pProgram, pRenderContext->projectedTextureShader.uniform_vertParams, &pRenderContext->projectedTextureShader.vertParams, sizeof(pRenderContext->projectedTextureShader.vertParams));
+    vcShader_BindConstantBuffer(pRenderContext->projectedTextureShader.pProgram, pRenderContext->projectedTextureShader.uniform_fragParams, &pRenderContext->projectedTextureShader.fragParams, sizeof(pRenderContext->projectedTextureShader.fragParams));
+
+    vcMesh_Render(pTexture->pMesh);
+  }
+}
+
 void vcRender_VisualizationPass(vcState *pProgramState, vcRenderContext *pRenderContext)
 {
   vcGLState_SetDepthStencilMode(vcGLSDM_Always, true);
@@ -1121,26 +1353,26 @@ void vcRender_RenderAndApplyViewSheds(vcState *pProgramState, vcRenderContext *p
     vcGLState_SetBlendMode(vcGLSBM_None);
     vcGLState_SetFaceMode(vcGLSFM_Solid, vcGLSCM_None);
     vcGLState_SetDepthStencilMode(vcGLSDM_LessOrEqual, true);
-    
+
     vcGLState_SetViewport(0, 0, ViewShedMapRes.x, ViewShedMapRes.y);
     vcFramebuffer_Bind(pRenderContext->viewShedRenderingContext.pFramebuffer, vcFramebufferClearOperation_All);
 
     if (doUDRender)
       vcRender_ConditionalSplatUD(pProgramState, pRenderContext, pRenderContext->viewShedRenderingContext.pDummyColour, pRenderContext->viewShedRenderingContext.pUDDepthTexture, renderData);
-    
+
     if (doPolygonRender)
     {
       for (int r = 0; r < ViewShedMapCount; ++r)
       {
         udDouble4x4 viewProjection = shadowRenderCameras[r].matrices.projection * shadowRenderCameras[r].matrices.view;
         vcGLState_SetViewport(r * singleRenderSize.x, 0, singleRenderSize.x, ViewShedMapRes.y);
-    
+
         for (size_t p = 0; p < renderData.polyModels.length; ++p)
         {
           vcRenderPolyInstance *pInstance = &renderData.polyModels[p];
           if (pInstance->HasFlag(vcRenderPolyInstance::RenderFlags_Transparent))
             continue;
-    
+
           if (pInstance->renderType == vcRenderPolyInstance::RenderType_Polygon)
             vcPolygonModel_Render(pInstance->pModel, 0.0f, pInstance->worldMat, viewProjection, vcPMP_Shadows);
           else if (pInstance->renderType == vcRenderPolyInstance::RenderType_SceneLayer)
@@ -1148,12 +1380,12 @@ void vcRender_RenderAndApplyViewSheds(vcState *pProgramState, vcRenderContext *p
         }
       }
     }
-    
+
     pRenderContext->shadowShader.params.inverseProjection = udFloat4x4::create(udInverse(pProgramState->pActiveViewport->camera.matrices.projection));
     pRenderContext->shadowShader.params.viewDistance = udFloat4::create(pViewShedData->viewDistance, 0.0f, 0.0f, 0.0f);
     pRenderContext->shadowShader.params.visibleColour = pViewShedData->visibleColour;
     pRenderContext->shadowShader.params.notVisibleColour = pViewShedData->notVisibleColour;
-    
+
     vcGLState_SetDepthStencilMode(vcGLSDM_Always, false);
     vcGLState_SetFaceMode(vcGLSFM_Solid, vcGLSCM_Back);
     vcGLState_SetBlendMode(vcGLSBM_Additive);
@@ -1169,6 +1401,13 @@ void vcRender_RenderAndApplyViewSheds(vcState *pProgramState, vcRenderContext *p
 
 void vcRender_OpaquePass(vcState *pProgramState, vcRenderContext *pRenderContext, vcRenderData &renderData)
 {
+  //uint32_t id = 8129;
+  //float idf = vcRender_EncodeModelId(id);
+  //uint32_t x = *((uint32_t *)&idf);
+  //uint16_t f16 = ((x >> 16) & 0x8000) | ((((x & 0x7f800000) - 0x38000000) >> 13) & 0x7c00) | ((x >> 13) & 0x03ff);
+  //float f32 = Float16ToFloat32(f16);
+  //uint16_t finalId = uint16_t((f32 * 0xffff) + 0.5f);
+
   vcFramebuffer_Bind(pRenderContext->gBuffer[pRenderContext->activeRenderTarget].pFramebuffer, vcFramebufferClearOperation_All, 0xff000000);
 
   vcGLState_ResetState();
@@ -1209,8 +1448,27 @@ void vcRender_OpaquePass(vcState *pProgramState, vcRenderContext *pRenderContext
         vcSceneLayerRenderer_Render(pInstance->pSceneLayer, objectId, pInstance->worldMat, pProgramState->pActiveViewport->camera.matrices.viewProjection, pProgramState->pActiveViewport->camera.position, pRenderContext->sceneResolution);
     }
 
-    vcGLState_SetFaceMode(vcGLSFM_Solid, vcGLSCM_Back);
     vcSceneLayer_EndFrame();
+
+    // Instanced polygon models
+    {
+      for (size_t i = 0; i < renderData.instancedModels.GetBatchCount(); ++i)
+      {
+        const vcBatchedRenderQueue<vcInstanceGeometryData>::Batch *pBatch = renderData.instancedModels.GetBatch(i);
+        vcPolygonModel_RenderInstanced(pBatch->pModel, pProgramState->pActiveViewport->camera.matrices.viewProjection, pBatch->count, pBatch->pData, sizeof(vcInstanceGeometryData));
+      }
+
+      for (size_t i = 0; i < renderData.instancedModels2.length; ++i)
+      {
+        for (size_t q = 0; q < renderData.instancedModels2[i]->queues.GetBatchCount(); ++q)
+        {
+          const vcBatchedRenderQueue<vcInstanceGeometryData>::Batch *pBatch = renderData.instancedModels2[i]->queues.GetBatch(q);
+          vcPolygonModel_RenderInstanced(pBatch->pModel, pProgramState->pActiveViewport->camera.matrices.viewProjection, pBatch->count, pBatch->pData, sizeof(vcInstanceGeometryData));
+        }
+      }
+    }
+
+    vcGLState_SetFaceMode(vcGLSFM_Solid, vcGLSCM_Back);
 
     for (size_t i = 0; i < renderData.waterVolumes.length; ++i)
       vcWaterRenderer_Render(renderData.waterVolumes[i], pProgramState->pActiveViewport->camera.matrices.view, pProgramState->pActiveViewport->camera.matrices.viewProjection, pRenderContext->skyboxShaderPanorama.pSkyboxTexture, pProgramState->deltaTime);
@@ -1578,6 +1836,11 @@ void vcRender_RenderScene(vcState *pProgramState, vcRenderContext *pRenderContex
 
   vcRender_RenderAndApplyViewSheds(pProgramState, pRenderContext, renderData);
 
+  vcRender_RenderQueryVisualization(pProgramState, pRenderContext, &densityMap);
+  vcRender_RenderQueryVisualization(pProgramState, pRenderContext, &airQualityMap);
+  vcRender_RenderQueryVisualization(pProgramState, pRenderContext, &cctvMap);
+  mediaNodeIndex = 0;
+
   if (selectionBufferActive)
     vcRender_ApplySelectionBuffer(pProgramState, pRenderContext);
 
@@ -1892,7 +2155,7 @@ vcRenderPickResult vcRender_PolygonPick(vcState *pProgramState, vcRenderContext 
   float pickDepth = 1.0f;
   if (doSelectRender)
   {
-    uint8_t pixelBytes[8] = {};
+    uint8_t pixelBytes[16] = {};
     vcTexture_EndReadPixels(pRenderContext->gBuffer[pRenderContext->asyncReadTarget].pNormal, pRenderContext->picking.location.x, pRenderContext->picking.location.y, 1, 1, pixelBytes);
     pRenderContext->asyncReadTarget = -1;
 

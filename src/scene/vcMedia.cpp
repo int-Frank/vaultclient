@@ -138,10 +138,26 @@ void vcMedia::OnNodeUpdate(vcState *pProgramState)
   ChangeProjection(pProgramState->geozone);
 }
 
+// this is a pure hack - let the media nodes control the appearance of
+// our query maps.
+int mediaNodeIndex = 0;
+extern QueryVisualizationTexture densityMap;
+
 void vcMedia::AddToScene(vcState *pProgramState, vcRenderData *pRenderData)
 {
+  ++mediaNodeIndex;
+
   if (!m_visible)
     return;
+
+  if (mediaNodeIndex == 1) // density map
+  {
+    densityMap.visible = true;
+  }
+  else if (mediaNodeIndex == 2) // other
+  {
+
+  }
 
   if (m_loadStatus == vcSLS_Loaded)
   {
