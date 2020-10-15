@@ -937,6 +937,20 @@ void vcRenderTerrain(vcState *pProgramState, vcRenderContext *pRenderContext)
 
     float terrainId = vcRender_EncodeModelId(vcObjectId_Terrain);
     vcTileRenderer_Render(pRenderContext->pTileRenderer, pProgramState->pActiveViewport->camera.matrices.view, pProgramState->pActiveViewport->camera.matrices.projection, pProgramState->pActiveViewport->camera.cameraIsUnderSurface, terrainId);
+
+    if (pProgramState->geozone.projection == udGZPT_ECEF)
+    {
+      // cover the poles with geometry
+      vcGLState_SetBlendMode(vcGLSBM_None);
+      vcGLState_SetFaceMode(vcGLSFM_Solid, vcGLSCM_None);
+      vcGLState_SetDepthStencilMode(vcGLSDM_LessOrEqual, true);
+
+      udDouble4x4 worldMatrix = udDouble4x4::translation(0.0, 0.0, 6329660.5 + 3000.0) * udDouble4x4::scaleNonUniform((1050058.0 + 27650.0 * 2 + 5000.0) / 2, (1050058.0 + 27650.0 * 2 + 5000.0) / 2, 150.0);
+      vcPolygonModel_Render(gInternalModels[vcInternalModelType_Sphere], terrainId, worldMatrix, pProgramState->pActiveViewport->camera.matrices.viewProjection, vcPMP_Standard);
+
+      udDouble4x4 worldMatrix2 = udDouble4x4::translation(0.0, 0.0, -(6329660.5 + 3000.0)) * udDouble4x4::scaleNonUniform((1050058.0 + 27650.0 * 2 + 5000.0) / 2, (1050058.0 + 27650.0 * 2 + 5000.0) / 2, 150.0);
+      vcPolygonModel_Render(gInternalModels[vcInternalModelType_Sphere], terrainId, worldMatrix2, pProgramState->pActiveViewport->camera.matrices.viewProjection, vcPMP_Standard);
+    }
   }
 }
 
