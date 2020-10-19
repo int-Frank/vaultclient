@@ -46,7 +46,7 @@ struct vcGeoTiff_GeoKeyHeader
 
 struct vcGeoTiff_GeoKeyEntry
 {
-  uint16 keyID;
+  uint16 id;
   uint16 TIFFTagLocation;
   uint16 count;
   uint16 valueOffset;
@@ -248,7 +248,7 @@ static udError vcTiff_SampleDataToColour(vcTiffImageFormat const &format, vcTiff
       }
       else
       {
-        UD_ERROR_SET(udE_InvalidConfiguration);
+        UD_ERROR_SET(udE_NotSupported);
       }
       break;
     }
@@ -290,7 +290,7 @@ static udError vcTiff_SampleDataToColour(vcTiffImageFormat const &format, vcTiff
       }
       else
       {
-        UD_ERROR_SET(udE_InvalidConfiguration);
+        UD_ERROR_SET(udE_NotSupported);
       }
       break;
     }
@@ -328,7 +328,7 @@ static udError vcTiff_SampleDataToColour(vcTiffImageFormat const &format, vcTiff
       }
       else
       {
-        UD_ERROR_SET(udE_InvalidConfiguration);
+        UD_ERROR_SET(udE_NotSupported);
       }
       break;
     }
@@ -358,7 +358,7 @@ static udError vcTiff_DecodeSample(void * pBuf, uint64_t pixelIndex, vcTiffImage
   else if (format.bitsPerSample == 2)
   {
     // Currently samples less than 8 bits must be uint
-    UD_ERROR_IF(format.sampleFormat != SAMPLEFORMAT_UINT, udE_InvalidConfiguration);
+    UD_ERROR_IF(format.sampleFormat != SAMPLEFORMAT_UINT, udE_NotSupported);
     uint64_t bitIndex = pixelIndex * format.samplesPerPixel + sampleIndex;
     uint8_t byte = ((uint8_t *)pBuf)[bitIndex / 4];
     uint32_t shft = (bitIndex % 4) * 2;
@@ -368,7 +368,7 @@ static udError vcTiff_DecodeSample(void * pBuf, uint64_t pixelIndex, vcTiffImage
   else if (format.bitsPerSample == 4)
   {
     // Currently samples less than 8 bits must be uint
-    UD_ERROR_IF(format.sampleFormat != SAMPLEFORMAT_UINT, udE_InvalidConfiguration);
+    UD_ERROR_IF(format.sampleFormat != SAMPLEFORMAT_UINT, udE_NotSupported);
     uint64_t bitIndex = pixelIndex * format.samplesPerPixel + sampleIndex;
     uint8_t byte = ((uint8_t *)pBuf)[bitIndex / 2];
     uint32_t shft = (bitIndex % 2) * 4;
@@ -384,7 +384,7 @@ static udError vcTiff_DecodeSample(void * pBuf, uint64_t pixelIndex, vcTiffImage
     else if (format.sampleFormat == SAMPLEFORMAT_UINT)
       pSample->t_uint64[sampleIndex] = ((uint8_t *)(pBuf))[ind];
     else
-      UD_ERROR_SET(udE_InvalidConfiguration);
+      UD_ERROR_SET(udE_NotSupported);
   }
   else if (format.bitsPerSample == 16)
   {
@@ -395,7 +395,7 @@ static udError vcTiff_DecodeSample(void * pBuf, uint64_t pixelIndex, vcTiffImage
     else if (format.sampleFormat == SAMPLEFORMAT_UINT)
       pSample->t_uint64[sampleIndex] = ((uint16_t *)(pBuf))[ind];
     else
-      UD_ERROR_SET(udE_InvalidConfiguration);
+      UD_ERROR_SET(udE_NotSupported);
   }
   else if (format.bitsPerSample == 32)
   {
@@ -407,7 +407,7 @@ static udError vcTiff_DecodeSample(void * pBuf, uint64_t pixelIndex, vcTiffImage
     else if (format.sampleFormat == SAMPLEFORMAT_IEEEFP)
       pSample->t_double[sampleIndex] = (double)((float *)(pBuf))[ind];
     else
-      UD_ERROR_SET(udE_InvalidConfiguration);
+      UD_ERROR_SET(udE_NotSupported);
   }
   else if (format.bitsPerSample == 64)
   {
@@ -419,7 +419,7 @@ static udError vcTiff_DecodeSample(void * pBuf, uint64_t pixelIndex, vcTiffImage
     else if (format.sampleFormat == SAMPLEFORMAT_IEEEFP)
       pSample->t_double[sampleIndex] = ((double *)(pBuf))[ind];
     else
-      UD_ERROR_SET(udE_InvalidConfiguration);
+      UD_ERROR_SET(udE_NotSupported);
   }
 
   result = udE_Success;
@@ -732,7 +732,19 @@ static udError vcGeoTiff_InitGISData(struct udConvertCustomItem *pConvertInput, 
   int geoKeyCounter = 0;
   uint16 count = 0;
   void *ptr = nullptr;
-  bool matrixFound = false;
+  bool hasModelPixelScaleTag = false;
+  udDouble3 scale = {};
+  bool hasModelTiepointTag = false;
+  bool hasModelTransformationTag = false;
+  udDouble4x4 mat = {};
+
+  struct TiePoint
+  {
+    udDouble3 raster;
+    udDouble3 model;
+  };
+
+  std::vector<TiePoint> tiePoints;
 
   if (pConvertInput == nullptr || pGeoTiffData == nullptr)
     UD_ERROR_SET(udE_InvalidParameter);
@@ -740,36 +752,68 @@ static udError vcGeoTiff_InitGISData(struct udConvertCustomItem *pConvertInput, 
   pData = (vcTiffConvertData *)pConvertInput->pData;
   UD_ERROR_NULL(pData, udE_InvalidParameter);
 
-  // We must have either (vcGT_ModelPixelScaleTag and vcGT_ModelTiepointTag) or vcGT_ModelTransformationTag.
   if (TIFFGetField(pData->pTiff, vcGT_ModelPixelScaleTag, &count, &ptr) == 1)
   {
-    udDouble3 scale = *(udDouble3 *)(ptr);
-
-    // For orthorectification or mosaicking applications a large number of 
-    // tiepoints may be specified on a mesh over the raster image. However, this
-    // is not currently supported, and only one tie point is assumed.
-    if (TIFFGetField(pData->pTiff, vcGT_ModelTiepointTag, &count, &ptr) == 1)
-    {
-      udDouble3 rasterPoint = {};
-      udDouble3 modelPoint = {};
-
-      UD_ERROR_IF(count != 6, udE_InvalidConfiguration);
-
-      rasterPoint = *(udDouble3 *)(ptr);
-      modelPoint = *((udDouble3 *)(ptr) + 1);
-
-      udDouble4x4 matScale = udDouble4x4::scaleNonUniform(scale.x, -scale.y, scale.z);
-      udDouble4x4 matTrans = udDouble4x4::translation(modelPoint.x - rasterPoint.x / scale.x, modelPoint.y + rasterPoint.y / scale.y, scale.z == 0 ? 1 : modelPoint.z - rasterPoint.z / scale.z);
-      
-      pGeoTiffData->T_raster_Model = matScale * matTrans;
-      matrixFound = true;
-    }
+    scale = *(udDouble3 *)(ptr);
+    hasModelPixelScaleTag = true;
   }
 
-  if (!matrixFound)
+  if (TIFFGetField(pData->pTiff, vcGT_ModelTiepointTag, &count, &ptr) == 1)
   {
-    UD_ERROR_IF(TIFFGetField(pData->pTiff, vcGT_ModelTransformationTag, &count, &ptr) != 1, udE_InvalidConfiguration);
-    pGeoTiffData->T_raster_Model = *(udDouble4x4 *)(ptr);
+    for (uint16 i = 0; i < count; i += 6)
+    {
+      TiePoint tp = {};
+      tp.raster = *((udDouble3 *)(ptr) + i / 6);
+      tp.model = *((udDouble3 *)(ptr) + i / 6 + 1);
+      tiePoints.push_back(tp);
+    }
+    hasModelTiepointTag = true;
+  }
+
+  if (TIFFGetField(pData->pTiff, vcGT_ModelTransformationTag, &count, &ptr) == 1)
+  {
+    mat = *(udDouble4x4 *)(ptr);
+    hasModelTransformationTag = true;
+  }
+
+  // The model-location of a raster point (x,y) is known, but not the scale or orientations.
+  if (!hasModelTransformationTag && !hasModelPixelScaleTag && hasModelTiepointTag && tiePoints.size() == 1)
+  {
+    pGeoTiffData->T_raster_Model = udDouble4x4::translation(tiePoints[0].model.x - tiePoints[0].raster.x, tiePoints[0].model.y + tiePoints[0].raster.y, tiePoints[0].model.z - tiePoints[0].raster.z);
+  }
+
+  // The location of three non-collinear raster points are known exactly, but the linearity of the transformation is not known.
+  else if (!hasModelTransformationTag && !hasModelPixelScaleTag && hasModelTiepointTag && tiePoints.size() == 3)
+  {
+    // For orthorectification or mosaicking applications a large number of tiepoints may be specified on a mesh over the raster image. 
+    UD_ERROR_SET(udE_NotSupported);
+  }
+
+  // The position and scale of the data is known exactly, and no rotation or shearing is needed to fit into the model space.
+  else if (!hasModelTransformationTag && hasModelPixelScaleTag && hasModelTiepointTag && tiePoints.size() == 1)
+  {
+    udDouble4x4 matScale = udDouble4x4::scaleNonUniform(scale.x, -scale.y, scale.z);
+    udDouble4x4 matTrans = udDouble4x4::translation(tiePoints[0].model.x - tiePoints[0].raster.x / scale.x, tiePoints[0].model.y + tiePoints[0].raster.y / scale.y, scale.z == 0 ? 1 : tiePoints[0].model.z - tiePoints[0].raster.z / scale.z);
+
+    pGeoTiffData->T_raster_Model = matScale * matTrans;
+  }
+
+  // The raster data requires rotation and/or lateral shearing to fit into the defined model space.
+  else if (hasModelTransformationTag && !hasModelPixelScaleTag && !hasModelTiepointTag)
+  {
+    pGeoTiffData->T_raster_Model = mat;
+  }
+
+  // The raster data cannot be fit into the model space with a simple affine transformation(rubber - sheeting required).
+  else if (!hasModelTransformationTag && !hasModelPixelScaleTag && hasModelTiepointTag && tiePoints.size() > 3)
+  {
+    UD_ERROR_SET(udE_NotSupported);
+  }
+
+  // Unknown configuration
+  else
+  {
+    UD_ERROR_SET(udE_InvalidConfiguration);
   }
     
   UD_ERROR_IF(TIFFGetField(pData->pTiff, vcGT_GeoKeyDirectoryTag, &count, &ptr) != 1, udE_ReadFailure);
@@ -781,7 +825,7 @@ static udError vcGeoTiff_InitGISData(struct udConvertCustomItem *pConvertInput, 
   for (uint16 i = 0; i < pGeoTiffData->geoKeyHeader.numberOfKeys; ++i)
   {
     vcGeoTiff_GeoKeyEntry key = {};
-    key.keyID = ((uint16 *)ptr)[geoKeyCounter++];
+    key.id = ((uint16 *)ptr)[geoKeyCounter++];
     key.TIFFTagLocation = ((uint16 *)ptr)[geoKeyCounter++];
     key.count = ((uint16 *)ptr)[geoKeyCounter++];
     key.valueOffset = ((uint16 *)ptr)[geoKeyCounter++];
