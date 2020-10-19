@@ -2,6 +2,7 @@
 #include <string.h>
 #include <math.h>
 #include <stdlib.h>
+#include <vector>
 
 #include "udStringUtil.h"
 #include "udPlatformUtil.h"
@@ -23,6 +24,44 @@
 
 // There could be an arbitrary number of samples, but currently we only support 4: red, green, blue, alpha
 #define MAX_SAMPLES 4
+
+enum vcTiffGeoTags
+{
+  vcGT_ModelTransformationTag = 34264, // 4x4 transform matrix
+  vcGT_ModelPixelScaleTag     = 33550, // x, y, z scale
+  vcGT_ModelTiepointTag       = 33922, // Translation essentially. Also known as 'GeoreferenceTag'
+  vcGT_GeoKeyDirectoryTag     = 34735,
+  vcGT_GeoDoubleParamsTag     = 34736,
+  vcGT_GeoAsciiParamsTag      = 34737,
+  vcGT_GDAL_NODATA            = 42113
+};
+
+struct vcGeoTiff_GeoKeyHeader
+{
+  uint16 keyDirectoryVersion;
+  uint16 keyRevision;
+  uint16 minorRevision;
+  uint16 numberOfKeys;
+};
+
+struct vcGeoTiff_GeoKeyEntry
+{
+  uint16 keyID;
+  uint16 TIFFTagLocation;
+  uint16 count;
+  uint16 valueOffset;
+};
+
+struct vcGeoTiffData
+{
+  vcGeoTiff_GeoKeyHeader geoKeyHeader;
+  std::vector<vcGeoTiff_GeoKeyEntry> geoKeys;
+  double *pDoubles;
+  const char *pStrings;
+  udDouble4x4 T_raster_Model;
+  bool hasNoDataTag;
+  double noDataTag;
+};
 
 enum vcTiffPhotometric
 {
@@ -686,6 +725,97 @@ epilogue:
   return result;
 }
 
+static udError vcGeoTiff_InitGISData(struct udConvertCustomItem *pConvertInput, vcGeoTiffData *pGeoTiffData)
+{
+  udError result = udE_Failure;
+  vcTiffConvertData *pData = nullptr;
+  int geoKeyCounter = 0;
+  uint16 count = 0;
+  void *ptr = nullptr;
+  bool matrixFound = false;
+
+  if (pConvertInput == nullptr || pGeoTiffData == nullptr)
+    UD_ERROR_SET(udE_InvalidParameter);
+
+  pData = (vcTiffConvertData *)pConvertInput->pData;
+  UD_ERROR_NULL(pData, udE_InvalidParameter);
+
+  // We must have either (vcGT_ModelPixelScaleTag and vcGT_ModelTiepointTag) or vcGT_ModelTransformationTag.
+  if (TIFFGetField(pData->pTiff, vcGT_ModelPixelScaleTag, &count, &ptr) == 1)
+  {
+    udDouble3 scale = *(udDouble3 *)(ptr);
+
+    // For orthorectification or mosaicking applications a large number of 
+    // tiepoints may be specified on a mesh over the raster image. However, this
+    // is not currently supported, and only one tie point is assumed.
+    if (TIFFGetField(pData->pTiff, vcGT_ModelTiepointTag, &count, &ptr) == 1)
+    {
+      udDouble3 rasterPoint = {};
+      udDouble3 modelPoint = {};
+
+      UD_ERROR_IF(count != 6, udE_InvalidConfiguration);
+
+      rasterPoint = *(udDouble3 *)(ptr);
+      modelPoint = *((udDouble3 *)(ptr) + 1);
+
+      udDouble4x4 matScale = udDouble4x4::scaleNonUniform(scale.x, -scale.y, scale.z);
+      udDouble4x4 matTrans = udDouble4x4::translation(modelPoint.x - rasterPoint.x / scale.x, modelPoint.y + rasterPoint.y / scale.y, scale.z == 0 ? 1 : modelPoint.z - rasterPoint.z / scale.z);
+      
+      pGeoTiffData->T_raster_Model = matScale * matTrans;
+      matrixFound = true;
+    }
+  }
+
+  if (!matrixFound)
+  {
+    UD_ERROR_IF(TIFFGetField(pData->pTiff, vcGT_ModelTransformationTag, &count, &ptr) != 1, udE_InvalidConfiguration);
+    pGeoTiffData->T_raster_Model = *(udDouble4x4 *)(ptr);
+  }
+    
+  UD_ERROR_IF(TIFFGetField(pData->pTiff, vcGT_GeoKeyDirectoryTag, &count, &ptr) != 1, udE_ReadFailure);
+
+  pGeoTiffData->geoKeyHeader.keyDirectoryVersion = ((uint16 *)ptr)[geoKeyCounter++];
+  pGeoTiffData->geoKeyHeader.keyRevision = ((uint16 *)ptr)[geoKeyCounter++];
+  pGeoTiffData->geoKeyHeader.minorRevision = ((uint16 *)ptr)[geoKeyCounter++];
+  pGeoTiffData->geoKeyHeader.numberOfKeys = ((uint16 *)ptr)[geoKeyCounter++];
+  for (uint16 i = 0; i < pGeoTiffData->geoKeyHeader.numberOfKeys; ++i)
+  {
+    vcGeoTiff_GeoKeyEntry key = {};
+    key.keyID = ((uint16 *)ptr)[geoKeyCounter++];
+    key.TIFFTagLocation = ((uint16 *)ptr)[geoKeyCounter++];
+    key.count = ((uint16 *)ptr)[geoKeyCounter++];
+    key.valueOffset = ((uint16 *)ptr)[geoKeyCounter++];
+    pGeoTiffData->geoKeys.push_back(key);
+  }
+
+  if (TIFFGetField(pData->pTiff, vcGT_GeoDoubleParamsTag, &count, &ptr) == 1)
+    pGeoTiffData->pDoubles = (double*)ptr;
+  if (TIFFGetField(pData->pTiff, vcGT_GeoAsciiParamsTag, &count, &ptr) == 1)
+    pGeoTiffData->pStrings = (char *)ptr;
+  if (TIFFGetField(pData->pTiff, vcGT_GDAL_NODATA, &count, &ptr) == 1)
+    pGeoTiffData->noDataTag = udStrAtof64((char*)ptr);
+
+  result = udE_Success;
+epilogue:
+  return result;
+}
+
+static udError vcTiff_InitAsGeoTiff(struct udConvertCustomItem *pConvertInput, const vcGeoTiffData &geoTiffData)
+{
+  udError result = udE_Failure;
+  vcTiffConvertData *pData = nullptr;;
+
+  if (pConvertInput == nullptr)
+    UD_ERROR_SET(udE_InvalidParameter);
+
+  pData = (vcTiffConvertData *)pConvertInput->pData;
+  UD_ERROR_NULL(pData, udE_InvalidParameter);
+
+  result = udE_Success;
+epilogue:
+  return result;
+}
+
 // TODO we should be able to add the point estimate here...
 udError TiffConvert_Open(struct udConvertCustomItem *pConvertInput, uint32_t everyNth, const double origin[3], double pointResolution, enum udConvertCustomItemFlags flags)
 {
@@ -693,6 +823,7 @@ udError TiffConvert_Open(struct udConvertCustomItem *pConvertInput, uint32_t eve
   vcTiffConvertData *pData = (vcTiffConvertData *)pConvertInput->pData;
   uint32 imageDepth;
   uint16 sampleFormats[MAX_SAMPLES] = {};
+  vcGeoTiffData geoTiffData = {};
 
   UD_ERROR_CHECK(vcTiff_GetDirctoryCount(pConvertInput->pName, &pData->directoryCount));
 
@@ -703,6 +834,11 @@ udError TiffConvert_Open(struct udConvertCustomItem *pConvertInput, uint32_t eve
   pData->origin = {origin[0], origin[1], origin[2]};
   pData->everyNth = everyNth;
   pData->convertFlags = flags;
+
+  if (vcGeoTiff_InitGISData(pConvertInput, &geoTiffData) == udE_Success)
+  {
+    // Register it a geotiff...
+  }
 
   // TODO check for and deal with image depth; saved as (format.imageDepth)
 
