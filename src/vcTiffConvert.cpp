@@ -25,15 +25,54 @@
 // There could be an arbitrary number of samples, but currently we only support 4: red, green, blue, alpha
 #define MAX_SAMPLES 4
 
-enum vcTiffGeoTags
+#define GEOTAG_UNDEFINED 0
+#define GEOTAG_USER_DEFINED 32767
+
+#define GEOTAG_MODELTRANSFORMATIONTAG 34264
+#define GEOTAG_MODELPIXELSCALETAG 33550
+#define GEOTAG_MODELTIEPOINTTAG 33922
+#define GEOTAG_GEOKEYDIRECTORYTAG 34735
+#define GEOTAG_GEODOUBLEPARAMSTAG 34736
+#define GEOTAG_GEOASCIIPARAMSTAG 34737
+#define GEOTAG_GDAL_NODATA 42113
+
+#define GEOTAG_MODELTYPEGEOKEY 1024
+#define GEOTAG_MODELTYPEPROJECTED 1
+#define GEOTAG_MODELTYPEGEOGRAPHIC 2
+#define GEOTAG_MODELTYPEGEOCENTRIC 3
+
+//enum vcTiffGeoTags : uint16_t
+//{
+//  // General codes
+//  vcGT_Undefined              = 0,
+//  vcGT_UserDefined            = 32767,
+//
+//  // Tiff tags
+//  vcGT_ModelTransformationTag = 34264, // 4x4 transform matrix
+//  vcGT_ModelPixelScaleTag     = 33550,
+//  vcGT_ModelTiepointTag       = 33922, // Also known as 'GeoreferenceTag'
+//  vcGT_GeoKeyDirectoryTag     = 34735,
+//  vcGT_GeoDoubleParamsTag     = 34736,
+//  vcGT_GeoAsciiParamsTag      = 34737,
+//  vcGT_GDAL_NODATA            = 42113,
+//
+//  // Model Type
+//  vcGT_ModelTypeGeoKey         = 1024,
+//};
+//
+//enum vcTiffModelType : uint16
+//{
+//  vcGT_ModelTypeProjected = 1,   // Projection Coordinate System
+//  vcGT_ModelTypeGeographic = 2,   // Geographic latitude-longitude System
+//  vcGT_ModelTypeGeocentric = 3,   // Geocentric (X,Y,Z) Coordinate System
+//};
+
+enum vcTiffPhotometric
 {
-  vcGT_ModelTransformationTag = 34264, // 4x4 transform matrix
-  vcGT_ModelPixelScaleTag     = 33550, // x, y, z scale
-  vcGT_ModelTiepointTag       = 33922, // Translation essentially. Also known as 'GeoreferenceTag'
-  vcGT_GeoKeyDirectoryTag     = 34735,
-  vcGT_GeoDoubleParamsTag     = 34736,
-  vcGT_GeoAsciiParamsTag      = 34737,
-  vcGT_GDAL_NODATA            = 42113
+  vcTP_GreyScale_WhiteIsZero = 0,
+  vcTP_GreyScale_BlackIsZero = 1,
+  vcTP_RGB = 2,
+  vcTP_ColourPalatte = 3,
 };
 
 struct vcGeoTiff_GeoKeyHeader
@@ -49,7 +88,12 @@ struct vcGeoTiff_GeoKeyEntry
   uint16 id;
   uint16 TIFFTagLocation;
   uint16 count;
-  uint16 valueOffset;
+  uint16 value;
+};
+
+struct vcGeolocationData
+{
+  uint16 modelType;
 };
 
 struct vcGeoTiffData
@@ -61,14 +105,6 @@ struct vcGeoTiffData
   udDouble4x4 T_raster_Model;
   bool hasNoDataTag;
   double noDataTag;
-};
-
-enum vcTiffPhotometric
-{
-  vcTP_GreyScale_WhiteIsZero = 0,
-  vcTP_GreyScale_BlackIsZero = 1,
-  vcTP_RGB                   = 2,
-  vcTP_ColourPalatte         = 3,
 };
 
 struct vcTiffSampleData
@@ -725,6 +761,38 @@ epilogue:
   return result;
 }
 
+static udError vcGeoTiff_ExtractGeolocationData(struct udConvertCustomItem *pConvertInput, vcGeoTiffData *pGeoTiffData, vcGeolocationData *pGeoData)
+{
+  udError result = udE_Failure;
+  vcTiffConvertData *pData = nullptr;
+
+  if (pConvertInput == nullptr || pGeoTiffData == nullptr || pGeoData == nullptr)
+    UD_ERROR_SET(udE_InvalidParameter);
+
+  pData = (vcTiffConvertData *)pConvertInput->pData;
+  UD_ERROR_NULL(pData, udE_InvalidParameter);
+
+  for (const vcGeoTiff_GeoKeyEntry &item : pGeoTiffData->geoKeys)
+  {
+    switch (item.id)
+    {
+    case GEOTAG_MODELTYPEGEOKEY:
+    {
+      pGeoData->modelType = item.value;
+      break;
+    }
+    default:
+    {
+      // Unknown key
+    }
+    }
+  }
+
+  result = udE_Success;
+epilogue:
+  return result;
+}
+
 static udError vcGeoTiff_InitGISData(struct udConvertCustomItem *pConvertInput, vcGeoTiffData *pGeoTiffData)
 {
   udError result = udE_Failure;
@@ -752,13 +820,13 @@ static udError vcGeoTiff_InitGISData(struct udConvertCustomItem *pConvertInput, 
   pData = (vcTiffConvertData *)pConvertInput->pData;
   UD_ERROR_NULL(pData, udE_InvalidParameter);
 
-  if (TIFFGetField(pData->pTiff, vcGT_ModelPixelScaleTag, &count, &ptr) == 1)
+  if (TIFFGetField(pData->pTiff, GEOTAG_MODELPIXELSCALETAG, &count, &ptr) == 1)
   {
     scale = *(udDouble3 *)(ptr);
     hasModelPixelScaleTag = true;
   }
 
-  if (TIFFGetField(pData->pTiff, vcGT_ModelTiepointTag, &count, &ptr) == 1)
+  if (TIFFGetField(pData->pTiff, GEOTAG_MODELTIEPOINTTAG, &count, &ptr) == 1)
   {
     for (uint16 i = 0; i < count; i += 6)
     {
@@ -770,7 +838,7 @@ static udError vcGeoTiff_InitGISData(struct udConvertCustomItem *pConvertInput, 
     hasModelTiepointTag = true;
   }
 
-  if (TIFFGetField(pData->pTiff, vcGT_ModelTransformationTag, &count, &ptr) == 1)
+  if (TIFFGetField(pData->pTiff, GEOTAG_MODELTRANSFORMATIONTAG, &count, &ptr) == 1)
   {
     mat = *(udDouble4x4 *)(ptr);
     hasModelTransformationTag = true;
@@ -816,7 +884,7 @@ static udError vcGeoTiff_InitGISData(struct udConvertCustomItem *pConvertInput, 
     UD_ERROR_SET(udE_InvalidConfiguration);
   }
     
-  UD_ERROR_IF(TIFFGetField(pData->pTiff, vcGT_GeoKeyDirectoryTag, &count, &ptr) != 1, udE_ReadFailure);
+  UD_ERROR_IF(TIFFGetField(pData->pTiff, GEOTAG_GEOKEYDIRECTORYTAG, &count, &ptr) != 1, udE_ReadFailure);
 
   pGeoTiffData->geoKeyHeader.keyDirectoryVersion = ((uint16 *)ptr)[geoKeyCounter++];
   pGeoTiffData->geoKeyHeader.keyRevision = ((uint16 *)ptr)[geoKeyCounter++];
@@ -828,15 +896,15 @@ static udError vcGeoTiff_InitGISData(struct udConvertCustomItem *pConvertInput, 
     key.id = ((uint16 *)ptr)[geoKeyCounter++];
     key.TIFFTagLocation = ((uint16 *)ptr)[geoKeyCounter++];
     key.count = ((uint16 *)ptr)[geoKeyCounter++];
-    key.valueOffset = ((uint16 *)ptr)[geoKeyCounter++];
+    key.value = ((uint16 *)ptr)[geoKeyCounter++];
     pGeoTiffData->geoKeys.push_back(key);
   }
 
-  if (TIFFGetField(pData->pTiff, vcGT_GeoDoubleParamsTag, &count, &ptr) == 1)
+  if (TIFFGetField(pData->pTiff, GEOTAG_GEODOUBLEPARAMSTAG, &count, &ptr) == 1)
     pGeoTiffData->pDoubles = (double*)ptr;
-  if (TIFFGetField(pData->pTiff, vcGT_GeoAsciiParamsTag, &count, &ptr) == 1)
+  if (TIFFGetField(pData->pTiff, GEOTAG_GEOASCIIPARAMSTAG, &count, &ptr) == 1)
     pGeoTiffData->pStrings = (char *)ptr;
-  if (TIFFGetField(pData->pTiff, vcGT_GDAL_NODATA, &count, &ptr) == 1)
+  if (TIFFGetField(pData->pTiff, GEOTAG_GDAL_NODATA, &count, &ptr) == 1)
     pGeoTiffData->noDataTag = udStrAtof64((char*)ptr);
 
   result = udE_Success;
