@@ -3,7 +3,6 @@
 #include <math.h>
 #include <stdlib.h>
 #include <vector>
-//#include <string>
 
 #include "udStringUtil.h"
 #include "udPlatformUtil.h"
@@ -24,6 +23,7 @@
 */
 
 // There could be an arbitrary number of samples, but currently we only support 4: red, green, blue, alpha
+// TODO This will have to be revisisted, as geotiffs might have any number of attribute channels.
 #define MAX_SAMPLES 4
 
 #define GEOTAG_UNDEFINED 0
@@ -1113,11 +1113,15 @@ static udError vcTiff_InitAsGeoTiff(struct udConvertCustomItem *pConvertInput, c
   pData = (vcTiffConvertData *)pConvertInput->pData;
   UD_ERROR_NULL(pData, udE_InvalidParameter);
 
-  pItem = vcGeoTiff_Find(&geoTiffData.geoKeys, GEOTAG_PCS_CITATION_GEOKEY);
+  pItem = vcGeoTiff_Find(&geoTiffData.geoKeys, GEOTAG_PCS_CITATION_GEOKEY); // WKT
   if (pItem != nullptr)
     r = udGeoZone_SetFromWKT(&zone, pItem->_string);
 
-  //udConvert_GetInfo
+  pItem = vcGeoTiff_Find(&geoTiffData.geoKeys, GEOTAG_PROJECTED_CS_TYPE_GEOKEY); // SRID
+  if (pItem != nullptr)
+    r = udGeoZone_SetFromSRID(&zone, pItem->_uint16);
+
+  //udConvert_SetSRID();
 
   result = udE_Success;
 epilogue:
@@ -1144,17 +1148,18 @@ udError TiffConvert_Open(struct udConvertCustomItem *pConvertInput, uint32_t eve
   pData->everyNth = everyNth;
   pData->convertFlags = flags;
 
+  // TODO this needs to go in vcTiff_AddItem
   if (vcGeoTiff_ExtractGISData(pConvertInput, &geoTiffData) == udE_Success)
   {
     if (vcTiff_InitAsGeoTiff(pConvertInput, geoTiffData) != udE_Success)
     {
-      // Failed to geolocate tiff, but try to convert anyway.
+      // Failed to geolocate tiff, but try to convert anyway. Can we send a message to the user?
     }
   }
   vcGeoTiff_Clear(&geoTiffData);
 
   // TODO Check for and deal with image depth; saved as (format.imageDepth)
-  //      What do we even do with this?
+  //      What do we even do with image depth?
 
   if (TIFFGetField(pData->pTiff, TIFFTAG_SAMPLESPERPIXEL, &resolutionUnit) == 1)
   {
@@ -1301,6 +1306,32 @@ void TiffConvert_Close(struct udConvertCustomItem *pConvertInput)
   memset(pData, 0, sizeof(vcTiffConvertData));
 }
 
+//static void vcTiff_AddTiffDirectory(udConvertContext *pConvertContext, const char *pFilename, int directoryIndex)
+//{
+//  udConvertCustomItem item = {};
+//  vcTiffConvertData *pData = udAllocType(vcTiffConvertData, 1, udAF_Zero);
+//
+//  item.pOpen = TiffConvert_Open;
+//  item.pReadPointsFloat = TiffConvert_ReadFloat;
+//  item.pDestroy = TiffConvert_Destroy;
+//  item.pClose = TiffConvert_Close;
+//
+//  item.pData = pData;
+//
+//  item.pName = udStrdup(pFilename);
+//  item.boundsKnown = false;
+//  item.pointCount = -1;
+//  item.pointCountIsEstimate = false;
+//
+//  item.sourceResolution = 0;
+//  udAttributeSet_Create(&item.attributes, udSAC_ARGB, 0);
+//
+//  // TODO Set point estimate, geolocated.
+//
+//  // Do the actual conversion
+//  return udConvert_AddCustomItem(pConvertContext, &item);
+//}
+
 udError vcTiff_AddItem(udConvertContext *pConvertContext, const char *pFilename)
 {
   udConvertCustomItem item = {};
@@ -1320,6 +1351,8 @@ udError vcTiff_AddItem(udConvertContext *pConvertContext, const char *pFilename)
 
   item.sourceResolution = 0;
   udAttributeSet_Create(&item.attributes, udSAC_ARGB, 0);
+
+  // TODO Set point estimate, geolocated.
 
   // Do the actual conversion
   return udConvert_AddCustomItem(pConvertContext, &item);
