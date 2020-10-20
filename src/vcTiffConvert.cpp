@@ -38,19 +38,20 @@
 #define GEOTAG_GDAL_NODATA 42113
 
 #define GEOTAG_MODEL_TYPE_GEOKEY 1024
-#define GEOTAG_MODEL_TYPE_PROJECTED 1
-#define GEOTAG_MODEL_TYPE_GEOGRAPHIC 2
-#define GEOTAG_MODEL_TYPE_GEOCENTRIC 3
-
+#define   GEOTAG_MODEL_TYPE_PROJECTED 1
+#define   GEOTAG_MODEL_TYPE_GEOGRAPHIC 2
+#define   GEOTAG_MODEL_TYPE_GEOCENTRIC 3
 #define GEOTAG_RASTER_TYPE_GEOKEY 1025
-#define GEOTAG_RASTER_PIXEL_IS_AREA 1
-#define GEOTAG_RASTER_PIXEL_IS_POINT 2
-
+#define   GEOTAG_RASTER_PIXEL_IS_AREA 1
+#define   GEOTAG_RASTER_PIXEL_IS_POINT 2
 #define GEOTAG_CITATION_GEOKEY 1026
 #define GEOTAG_GEOGRAPHIC_TYPE_GEOKEY 2048
 #define GEOTAG_GEOG_CITATION_GEOKEY 2049
 #define GEOTAG_GEOG_GEODETIC_DATUM_GEOKEY 2050
+#define GEOTAG_GEOG_PRIME_MERIDIAN_GEOKEY 2051
 #define GEOTAG_GEOG_ANGULAR_UNITS_GEOKEY 2054
+#define GEOTAG_GEOG_ANGULAR_UNIT_SIZE_GEOKEY 2055
+#define GEOTAG_GEOG_ELLIPSOID_GEOKEY 2056
 #define GEOTAG_GEOG_SEMI_MAJOR_AXIS_GEOKEY 2057
 #define GEOTAG_GEOG_SEMI_MINOR_AXIS_GEOKEY 2058
 #define GEOTAG_GEOG_INV_FLATTENING_GEOKEY 2059
@@ -109,10 +110,13 @@ struct vcGeolocationData
   uint16 projectedCSType;
   uint16 projection;
   uint16 projLinearUnits;
+  uint16 geogPrimeMeridian;
+  uint16 geogEllipsoid;
   double geogSemiMajorAxis;
   double geogSemiMinorAxis;
   double geogInvFlattening;
   double geogPrimeMeridianLong;
+  double geogAngularUnitSize;
   std::string PCSCitation;
   std::string citation;
   std::string geogCitation;
@@ -786,7 +790,11 @@ static std::string vcGeoTiff_ExtractString(const char *pCharArray, uint16 offset
   if (pCharArray == nullptr)
     return "";
 
-  return std::string(pCharArray + offset, length);
+  std::string str(pCharArray + offset, length);
+  if (str.back() == '|')
+    str.pop_back();
+
+  return str;
 }
 
 static udError vcGeoTiff_TranslateGeokeys(vcGeoTiffData *pGeoTiffData, const std::vector<vcGeoTiff_GeoKeyEntry> &keyList, const double *pDoubles, const char *pStrings)
@@ -812,7 +820,7 @@ static udError vcGeoTiff_TranslateGeokeys(vcGeoTiffData *pGeoTiffData, const std
     }
     case GEOTAG_CITATION_GEOKEY:
     {
-      pGeoTiffData->geoData.citation = std::string(pStrings + item.value, item.count);
+      pGeoTiffData->geoData.citation = vcGeoTiff_ExtractString(pStrings, item.value, item.count);
       break;
     }
     case GEOTAG_GEOGRAPHIC_TYPE_GEOKEY:
@@ -822,7 +830,7 @@ static udError vcGeoTiff_TranslateGeokeys(vcGeoTiffData *pGeoTiffData, const std
     }
     case GEOTAG_GEOG_CITATION_GEOKEY:
     {
-      pGeoTiffData->geoData.geogCitation = std::string(pStrings + item.value, item.count);
+      pGeoTiffData->geoData.geogCitation = vcGeoTiff_ExtractString(pStrings, item.value, item.count);
       break;
     }
     case GEOTAG_GEOG_GEODETIC_DATUM_GEOKEY:
@@ -862,7 +870,7 @@ static udError vcGeoTiff_TranslateGeokeys(vcGeoTiffData *pGeoTiffData, const std
     }
     case GEOTAG_PCS_CITATION_GEOKEY:
     {
-      pGeoTiffData->geoData.PCSCitation = std::string(pStrings + item.value, item.count);
+      pGeoTiffData->geoData.PCSCitation = vcGeoTiff_ExtractString(pStrings, item.value, item.count);
       break;
     }
     case GEOTAG_PROJECTION_GEOKEY:
@@ -873,6 +881,21 @@ static udError vcGeoTiff_TranslateGeokeys(vcGeoTiffData *pGeoTiffData, const std
     case GEOTAG_PROJ_LINEAR_UNITS_GEOKEY:
     {
       pGeoTiffData->geoData.projLinearUnits = item.value;
+      break;
+    }
+    case GEOTAG_GEOG_PRIME_MERIDIAN_GEOKEY:
+    {
+      pGeoTiffData->geoData.geogPrimeMeridian = item.value;
+      break;
+    }
+    case GEOTAG_GEOG_ANGULAR_UNIT_SIZE_GEOKEY:
+    {
+      pGeoTiffData->geoData.geogAngularUnitSize = pDoubles[item.value];
+      break;
+    }
+    case GEOTAG_GEOG_ELLIPSOID_GEOKEY:
+    {
+      pGeoTiffData->geoData.geogEllipsoid = item.value;
       break;
     }
     default:
@@ -1009,9 +1032,12 @@ epilogue:
   return result;
 }
 
+#include "udGeoZone.h"
 static udError vcTiff_InitAsGeoTiff(struct udConvertCustomItem *pConvertInput, const vcGeoTiffData &geoTiffData)
 {
   udError result = udE_Failure;
+  udResult r;
+  udGeoZone zone = {};
   vcTiffConvertData *pData = nullptr;
 
   if (pConvertInput == nullptr)
@@ -1019,6 +1045,8 @@ static udError vcTiff_InitAsGeoTiff(struct udConvertCustomItem *pConvertInput, c
 
   pData = (vcTiffConvertData *)pConvertInput->pData;
   UD_ERROR_NULL(pData, udE_InvalidParameter);
+
+  r = udGeoZone_SetFromWKT(&zone, geoTiffData.geoData.PCSCitation.c_str());
 
   //udConvert_GetInfo
 
@@ -1035,6 +1063,7 @@ udError TiffConvert_Open(struct udConvertCustomItem *pConvertInput, uint32_t eve
   uint32 imageDepth;
   uint16 sampleFormats[MAX_SAMPLES] = {};
   vcGeoTiffData geoTiffData = {};
+  uint16 resolutionUnit = 0;
 
   UD_ERROR_CHECK(vcTiff_GetDirctoryCount(pConvertInput->pName, &pData->directoryCount));
 
@@ -1054,7 +1083,17 @@ udError TiffConvert_Open(struct udConvertCustomItem *pConvertInput, uint32_t eve
     }
   }
 
-  // TODO check for and deal with image depth; saved as (format.imageDepth)
+  // TODO Check for and deal with image depth; saved as (format.imageDepth)
+  //      What do we even do with this?
+
+  if (TIFFGetField(pData->pTiff, TIFFTAG_SAMPLESPERPIXEL, &resolutionUnit) == 1)
+  {
+    // TODO how do we know pointResolution should override this, or vice versa?
+    if (resolutionUnit == RESUNIT_INCH)
+      pData->pointResolution = 0.0254;
+    else if (resolutionUnit == RESUNIT_CENTIMETER)
+      pData->pointResolution = 0.01;
+  }
 
   UD_ERROR_IF(TIFFGetField(pData->pTiff, TIFFTAG_SAMPLESPERPIXEL, &pData->format.samplesPerPixel) != 1, udE_ReadFailure);
   UD_ERROR_IF(TIFFGetField(pData->pTiff, TIFFTAG_BITSPERSAMPLE, &pData->format.bitsPerSample) != 1, udE_ReadFailure);
