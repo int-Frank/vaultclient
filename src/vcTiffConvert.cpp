@@ -3,6 +3,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <vector>
+#include <string>
 
 #include "udStringUtil.h"
 #include "udPlatformUtil.h"
@@ -41,31 +42,23 @@
 #define GEOTAG_MODELTYPEGEOGRAPHIC 2
 #define GEOTAG_MODELTYPEGEOCENTRIC 3
 
-//enum vcTiffGeoTags : uint16_t
-//{
-//  // General codes
-//  vcGT_Undefined              = 0,
-//  vcGT_UserDefined            = 32767,
-//
-//  // Tiff tags
-//  vcGT_ModelTransformationTag = 34264, // 4x4 transform matrix
-//  vcGT_ModelPixelScaleTag     = 33550,
-//  vcGT_ModelTiepointTag       = 33922, // Also known as 'GeoreferenceTag'
-//  vcGT_GeoKeyDirectoryTag     = 34735,
-//  vcGT_GeoDoubleParamsTag     = 34736,
-//  vcGT_GeoAsciiParamsTag      = 34737,
-//  vcGT_GDAL_NODATA            = 42113,
-//
-//  // Model Type
-//  vcGT_ModelTypeGeoKey         = 1024,
-//};
-//
-//enum vcTiffModelType : uint16
-//{
-//  vcGT_ModelTypeProjected = 1,   // Projection Coordinate System
-//  vcGT_ModelTypeGeographic = 2,   // Geographic latitude-longitude System
-//  vcGT_ModelTypeGeocentric = 3,   // Geocentric (X,Y,Z) Coordinate System
-//};
+#define GEOTAG_RASTERTYPEGEOKEY 1025
+#define GEOTAG_RASTERPIXELISAREA 1
+#define GEOTAG_RASTERPIXELISPOINT 2
+
+#define GEOTAG_CITATIONGEOKEY 1026
+#define GEOTAG_GEOGRAPHICTYPEGEOKEY 2048
+#define GEOTAG_GEOGCITATIONGEOKEY 2049
+#define GEOTAG_GEOGGEODETICDATUMGEOKEY 2050
+#define GEOTAG_GEOGANGULARUNITSGEOKEY 2054
+#define GEOTAG_GEOGSEMIMAJORAXISGEOKEY 2057
+#define GEOTAG_GEOGSEMIMINORAXISGEOKEY 2058
+#define GEOTAG_GEOGINVFLATTENINGGEOKEY 2059
+#define GEOTAG_GEOGPRIMEMERIDIANLONGGEOKEY 2061
+#define GEOTAG_PROJECTEDCSTYPEGEOKEY 3072
+#define GEOTAG_PCSCITATIONGEOKEY 3073
+#define GEOTAG_PROJECTIONGEOKEY 3074
+#define GEOTAG_PROJLINEARUNITSGEOKEY 3076
 
 enum vcTiffPhotometric
 {
@@ -94,14 +87,26 @@ struct vcGeoTiff_GeoKeyEntry
 struct vcGeolocationData
 {
   uint16 modelType;
+  uint16 rasterType;
+  uint16 geographicType;
+  uint16 geogGeodeticDatum;
+  uint16 geogAngularUnits;
+  uint16 projectedCSType;
+  uint16 projection;
+  uint16 projLinearUnits;
+  double geogSemiMajorAxis;
+  double geogSemiMinorAxis;
+  double geogInvFlattening;
+  double geogPrimeMeridianLong;
+  std::string PCSCitation;
+  std::string citation;
+  std::string geogCitation;
 };
 
 struct vcGeoTiffData
 {
   vcGeoTiff_GeoKeyHeader geoKeyHeader;
-  std::vector<vcGeoTiff_GeoKeyEntry> geoKeys;
-  double *pDoubles;
-  const char *pStrings;
+  vcGeolocationData geoData;
   udDouble4x4 T_raster_Model;
   bool hasNoDataTag;
   double noDataTag;
@@ -761,24 +766,98 @@ epilogue:
   return result;
 }
 
-static udError vcGeoTiff_ExtractGeolocationData(struct udConvertCustomItem *pConvertInput, vcGeoTiffData *pGeoTiffData, vcGeolocationData *pGeoData)
+static std::string vcGeoTiff_ExtractString(const char *pCharArray, uint16 offset, uint16 length)
+{
+  if (pCharArray == nullptr)
+    return "";
+
+  return std::string(pCharArray + offset, length);
+}
+
+static udError vcGeoTiff_TranscribeGeokeys(vcGeoTiffData *pGeoTiffData, const std::vector<vcGeoTiff_GeoKeyEntry> &keyList, const double *pDoubles, const char *pStrings)
 {
   udError result = udE_Failure;
-  vcTiffConvertData *pData = nullptr;
 
-  if (pConvertInput == nullptr || pGeoTiffData == nullptr || pGeoData == nullptr)
+  if (pGeoTiffData == nullptr || pDoubles == nullptr || pStrings == nullptr)
     UD_ERROR_SET(udE_InvalidParameter);
 
-  pData = (vcTiffConvertData *)pConvertInput->pData;
-  UD_ERROR_NULL(pData, udE_InvalidParameter);
-
-  for (const vcGeoTiff_GeoKeyEntry &item : pGeoTiffData->geoKeys)
+  for (const vcGeoTiff_GeoKeyEntry &item : keyList)
   {
     switch (item.id)
     {
     case GEOTAG_MODELTYPEGEOKEY:
     {
-      pGeoData->modelType = item.value;
+      pGeoTiffData->geoData.modelType = item.value;
+      break;
+    }
+    case GEOTAG_RASTERTYPEGEOKEY:
+    {
+      pGeoTiffData->geoData.rasterType = item.value;
+      break;
+    }
+    case GEOTAG_CITATIONGEOKEY:
+    {
+      pGeoTiffData->geoData.citation = std::string(pStrings + item.value, item.count);
+      break;
+    }
+    case GEOTAG_GEOGRAPHICTYPEGEOKEY:
+    {
+      pGeoTiffData->geoData.geographicType = item.value;
+      break;
+    }
+    case GEOTAG_GEOGCITATIONGEOKEY:
+    {
+      pGeoTiffData->geoData.geogCitation = std::string(pStrings + item.value, item.count);
+      break;
+    }
+    case GEOTAG_GEOGGEODETICDATUMGEOKEY:
+    {
+      pGeoTiffData->geoData.geogGeodeticDatum = item.value;
+      break;
+    }
+    case GEOTAG_GEOGANGULARUNITSGEOKEY:
+    {
+      pGeoTiffData->geoData.geogAngularUnits = item.value;
+      break;
+    }
+    case GEOTAG_GEOGSEMIMAJORAXISGEOKEY:
+    {
+      pGeoTiffData->geoData.geogSemiMajorAxis = pDoubles[item.value];
+      break;
+    }
+    case GEOTAG_GEOGSEMIMINORAXISGEOKEY:
+    {
+      pGeoTiffData->geoData.geogSemiMinorAxis = pDoubles[item.value];
+      break;
+    }
+    case GEOTAG_GEOGINVFLATTENINGGEOKEY:
+    {
+      pGeoTiffData->geoData.geogInvFlattening = pDoubles[item.value];
+      break;
+    }
+    case GEOTAG_GEOGPRIMEMERIDIANLONGGEOKEY:
+    {
+      pGeoTiffData->geoData.geogPrimeMeridianLong = pDoubles[item.value];
+      break;
+    }
+    case GEOTAG_PROJECTEDCSTYPEGEOKEY:
+    {
+      pGeoTiffData->geoData.projectedCSType = item.value;
+      break;
+    }
+    case GEOTAG_PCSCITATIONGEOKEY:
+    {
+      pGeoTiffData->geoData.PCSCitation = std::string(pStrings + item.value, item.count);
+      break;
+    }
+    case GEOTAG_PROJECTIONGEOKEY:
+    {
+      pGeoTiffData->geoData.projection = item.value;
+      break;
+    }
+    case GEOTAG_PROJLINEARUNITSGEOKEY:
+    {
+      pGeoTiffData->geoData.projLinearUnits = item.value;
       break;
     }
     default:
@@ -798,13 +877,16 @@ static udError vcGeoTiff_InitGISData(struct udConvertCustomItem *pConvertInput, 
   udError result = udE_Failure;
   vcTiffConvertData *pData = nullptr;
   int geoKeyCounter = 0;
-  uint16 count = 0;
+  uint32 count = 0;
   void *ptr = nullptr;
   bool hasModelPixelScaleTag = false;
   udDouble3 scale = {};
   bool hasModelTiepointTag = false;
   bool hasModelTransformationTag = false;
   udDouble4x4 mat = {};
+  std::vector<vcGeoTiff_GeoKeyEntry> geoKeys;
+  double *pDoubles = nullptr;
+  const char *pStrings = nullptr;
 
   struct TiePoint
   {
@@ -897,17 +979,17 @@ static udError vcGeoTiff_InitGISData(struct udConvertCustomItem *pConvertInput, 
     key.TIFFTagLocation = ((uint16 *)ptr)[geoKeyCounter++];
     key.count = ((uint16 *)ptr)[geoKeyCounter++];
     key.value = ((uint16 *)ptr)[geoKeyCounter++];
-    pGeoTiffData->geoKeys.push_back(key);
+    geoKeys.push_back(key);
   }
 
   if (TIFFGetField(pData->pTiff, GEOTAG_GEODOUBLEPARAMSTAG, &count, &ptr) == 1)
-    pGeoTiffData->pDoubles = (double*)ptr;
+    pDoubles = (double*)ptr;
   if (TIFFGetField(pData->pTiff, GEOTAG_GEOASCIIPARAMSTAG, &count, &ptr) == 1)
-    pGeoTiffData->pStrings = (char *)ptr;
+    pStrings = (char *)ptr;
   if (TIFFGetField(pData->pTiff, GEOTAG_GDAL_NODATA, &count, &ptr) == 1)
-    pGeoTiffData->noDataTag = udStrAtof64((char*)ptr);
+    pGeoTiffData->noDataTag = udStrAtof64((const char*)ptr);
 
-  result = udE_Success;
+  result = vcGeoTiff_TranscribeGeokeys(pGeoTiffData, geoKeys, pDoubles, pStrings);
 epilogue:
   return result;
 }
@@ -915,7 +997,7 @@ epilogue:
 static udError vcTiff_InitAsGeoTiff(struct udConvertCustomItem *pConvertInput, const vcGeoTiffData &geoTiffData)
 {
   udError result = udE_Failure;
-  vcTiffConvertData *pData = nullptr;;
+  vcTiffConvertData *pData = nullptr;
 
   if (pConvertInput == nullptr)
     UD_ERROR_SET(udE_InvalidParameter);
@@ -949,7 +1031,10 @@ udError TiffConvert_Open(struct udConvertCustomItem *pConvertInput, uint32_t eve
 
   if (vcGeoTiff_InitGISData(pConvertInput, &geoTiffData) == udE_Success)
   {
-    // Register it a geotiff...
+    if (vcTiff_InitAsGeoTiff(pConvertInput, geoTiffData) != udE_Success)
+    {
+      // Failed to geolocate tiff, but try to convert anyway.
+    }
   }
 
   // TODO check for and deal with image depth; saved as (format.imageDepth)
