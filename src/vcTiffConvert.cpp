@@ -774,7 +774,7 @@ static std::string vcGeoTiff_ExtractString(const char *pCharArray, uint16 offset
   return std::string(pCharArray + offset, length);
 }
 
-static udError vcGeoTiff_TranscribeGeokeys(vcGeoTiffData *pGeoTiffData, const std::vector<vcGeoTiff_GeoKeyEntry> &keyList, const double *pDoubles, const char *pStrings)
+static udError vcGeoTiff_TranslateGeokeys(vcGeoTiffData *pGeoTiffData, const std::vector<vcGeoTiff_GeoKeyEntry> &keyList, const double *pDoubles, const char *pStrings)
 {
   udError result = udE_Failure;
 
@@ -872,7 +872,7 @@ epilogue:
   return result;
 }
 
-static udError vcGeoTiff_InitGISData(struct udConvertCustomItem *pConvertInput, vcGeoTiffData *pGeoTiffData)
+static udError vcGeoTiff_ExtractGISData(struct udConvertCustomItem *pConvertInput, vcGeoTiffData *pGeoTiffData)
 {
   udError result = udE_Failure;
   vcTiffConvertData *pData = nullptr;
@@ -989,7 +989,7 @@ static udError vcGeoTiff_InitGISData(struct udConvertCustomItem *pConvertInput, 
   if (TIFFGetField(pData->pTiff, GEOTAG_GDAL_NODATA, &count, &ptr) == 1)
     pGeoTiffData->noDataTag = udStrAtof64((const char*)ptr);
 
-  result = vcGeoTiff_TranscribeGeokeys(pGeoTiffData, geoKeys, pDoubles, pStrings);
+  result = vcGeoTiff_TranslateGeokeys(pGeoTiffData, geoKeys, pDoubles, pStrings);
 epilogue:
   return result;
 }
@@ -1004,6 +1004,8 @@ static udError vcTiff_InitAsGeoTiff(struct udConvertCustomItem *pConvertInput, c
 
   pData = (vcTiffConvertData *)pConvertInput->pData;
   UD_ERROR_NULL(pData, udE_InvalidParameter);
+
+  //udConvert_GetInfo
 
   result = udE_Success;
 epilogue:
@@ -1029,7 +1031,7 @@ udError TiffConvert_Open(struct udConvertCustomItem *pConvertInput, uint32_t eve
   pData->everyNth = everyNth;
   pData->convertFlags = flags;
 
-  if (vcGeoTiff_InitGISData(pConvertInput, &geoTiffData) == udE_Success)
+  if (vcGeoTiff_ExtractGISData(pConvertInput, &geoTiffData) == udE_Success)
   {
     if (vcTiff_InitAsGeoTiff(pConvertInput, geoTiffData) != udE_Success)
     {
