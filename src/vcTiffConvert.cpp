@@ -29,36 +29,51 @@
 #define GEOTAG_UNDEFINED 0
 #define GEOTAG_USER_DEFINED 32767
 
-#define GEOTAG_MODELTRANSFORMATIONTAG 34264
-#define GEOTAG_MODELPIXELSCALETAG 33550
-#define GEOTAG_MODELTIEPOINTTAG 33922
-#define GEOTAG_GEOKEYDIRECTORYTAG 34735
-#define GEOTAG_GEODOUBLEPARAMSTAG 34736
-#define GEOTAG_GEOASCIIPARAMSTAG 34737
+#define GEOTAG_MODEL_TRANSFORMATION_TAG 34264
+#define GEOTAG_MODEL_PIXEL_SCALE_TAG 33550
+#define GEOTAG_MODEL_TIEPOINT_TAG 33922
+#define GEOTAG_GEOKEY_DIRECTORY_TAG 34735
+#define GEOTAG_GEO_DOUBLE_PARAMS_TAG 34736
+#define GEOTAG_GEO_ASCII_PARAMS_TAG 34737
 #define GEOTAG_GDAL_NODATA 42113
 
-#define GEOTAG_MODELTYPEGEOKEY 1024
-#define GEOTAG_MODELTYPEPROJECTED 1
-#define GEOTAG_MODELTYPEGEOGRAPHIC 2
-#define GEOTAG_MODELTYPEGEOCENTRIC 3
+#define GEOTAG_MODEL_TYPE_GEOKEY 1024
+#define GEOTAG_MODEL_TYPE_PROJECTED 1
+#define GEOTAG_MODEL_TYPE_GEOGRAPHIC 2
+#define GEOTAG_MODEL_TYPE_GEOCENTRIC 3
 
-#define GEOTAG_RASTERTYPEGEOKEY 1025
-#define GEOTAG_RASTERPIXELISAREA 1
-#define GEOTAG_RASTERPIXELISPOINT 2
+#define GEOTAG_RASTER_TYPE_GEOKEY 1025
+#define GEOTAG_RASTER_PIXEL_IS_AREA 1
+#define GEOTAG_RASTER_PIXEL_IS_POINT 2
 
-#define GEOTAG_CITATIONGEOKEY 1026
-#define GEOTAG_GEOGRAPHICTYPEGEOKEY 2048
-#define GEOTAG_GEOGCITATIONGEOKEY 2049
-#define GEOTAG_GEOGGEODETICDATUMGEOKEY 2050
-#define GEOTAG_GEOGANGULARUNITSGEOKEY 2054
-#define GEOTAG_GEOGSEMIMAJORAXISGEOKEY 2057
-#define GEOTAG_GEOGSEMIMINORAXISGEOKEY 2058
-#define GEOTAG_GEOGINVFLATTENINGGEOKEY 2059
-#define GEOTAG_GEOGPRIMEMERIDIANLONGGEOKEY 2061
-#define GEOTAG_PROJECTEDCSTYPEGEOKEY 3072
-#define GEOTAG_PCSCITATIONGEOKEY 3073
-#define GEOTAG_PROJECTIONGEOKEY 3074
-#define GEOTAG_PROJLINEARUNITSGEOKEY 3076
+#define GEOTAG_CITATION_GEOKEY 1026
+#define GEOTAG_GEOGRAPHIC_TYPE_GEOKEY 2048
+#define GEOTAG_GEOG_CITATION_GEOKEY 2049
+#define GEOTAG_GEOG_GEODETIC_DATUM_GEOKEY 2050
+#define GEOTAG_GEOG_ANGULAR_UNITS_GEOKEY 2054
+#define GEOTAG_GEOG_SEMI_MAJOR_AXIS_GEOKEY 2057
+#define GEOTAG_GEOG_SEMI_MINOR_AXIS_GEOKEY 2058
+#define GEOTAG_GEOG_INV_FLATTENING_GEOKEY 2059
+#define GEOTAG_GEOG_PRIME_MERIDIAN_LONG_GEOKEY 2061
+#define GEOTAG_PROJECTED_CS_TYPE_GEOKEY 3072
+#define GEOTAG_PCS_CITATION_GEOKEY 3073
+#define GEOTAG_PROJECTION_GEOKEY 3074
+#define GEOTAG_PROJ_LINEAR_UNITS_GEOKEY 3076
+#define   LINEAR_METER 9001
+#define   LINEAR_FOOT 9002
+#define   LINEAR_FOOT_US_SURVEY 9003
+#define   LINEAR_FOOT_MODIFIED_AMERICAN 9004
+#define   LINEAR_FOOT_CLARKE 9005
+#define   LINEAR_FOOT_INDIAN 9006
+#define   LINEAR_LINK 9007
+#define   LINEAR_LINK_BENOIT 9008
+#define   LINEAR_LINK_SEARS 9009
+#define   LINEAR_CHAIN_BENOIT 9010
+#define   LINEAR_CHAIN_SEARS 9011
+#define   LINEAR_YARD_SEARS 9012
+#define   LINEAR_YARD_INDIAN 9013
+#define   LINEAR_FATHOM 9014
+#define   LINEAR_MILE_INTERNATIONAL_NAUTICAL 9015
 
 enum vcTiffPhotometric
 {
@@ -785,77 +800,77 @@ static udError vcGeoTiff_TranslateGeokeys(vcGeoTiffData *pGeoTiffData, const std
   {
     switch (item.id)
     {
-    case GEOTAG_MODELTYPEGEOKEY:
+    case GEOTAG_MODEL_TYPE_GEOKEY:
     {
       pGeoTiffData->geoData.modelType = item.value;
       break;
     }
-    case GEOTAG_RASTERTYPEGEOKEY:
+    case GEOTAG_RASTER_TYPE_GEOKEY:
     {
       pGeoTiffData->geoData.rasterType = item.value;
       break;
     }
-    case GEOTAG_CITATIONGEOKEY:
+    case GEOTAG_CITATION_GEOKEY:
     {
       pGeoTiffData->geoData.citation = std::string(pStrings + item.value, item.count);
       break;
     }
-    case GEOTAG_GEOGRAPHICTYPEGEOKEY:
+    case GEOTAG_GEOGRAPHIC_TYPE_GEOKEY:
     {
       pGeoTiffData->geoData.geographicType = item.value;
       break;
     }
-    case GEOTAG_GEOGCITATIONGEOKEY:
+    case GEOTAG_GEOG_CITATION_GEOKEY:
     {
       pGeoTiffData->geoData.geogCitation = std::string(pStrings + item.value, item.count);
       break;
     }
-    case GEOTAG_GEOGGEODETICDATUMGEOKEY:
+    case GEOTAG_GEOG_GEODETIC_DATUM_GEOKEY:
     {
       pGeoTiffData->geoData.geogGeodeticDatum = item.value;
       break;
     }
-    case GEOTAG_GEOGANGULARUNITSGEOKEY:
+    case GEOTAG_GEOG_ANGULAR_UNITS_GEOKEY:
     {
       pGeoTiffData->geoData.geogAngularUnits = item.value;
       break;
     }
-    case GEOTAG_GEOGSEMIMAJORAXISGEOKEY:
+    case GEOTAG_GEOG_SEMI_MAJOR_AXIS_GEOKEY:
     {
       pGeoTiffData->geoData.geogSemiMajorAxis = pDoubles[item.value];
       break;
     }
-    case GEOTAG_GEOGSEMIMINORAXISGEOKEY:
+    case GEOTAG_GEOG_SEMI_MINOR_AXIS_GEOKEY:
     {
       pGeoTiffData->geoData.geogSemiMinorAxis = pDoubles[item.value];
       break;
     }
-    case GEOTAG_GEOGINVFLATTENINGGEOKEY:
+    case GEOTAG_GEOG_INV_FLATTENING_GEOKEY:
     {
       pGeoTiffData->geoData.geogInvFlattening = pDoubles[item.value];
       break;
     }
-    case GEOTAG_GEOGPRIMEMERIDIANLONGGEOKEY:
+    case GEOTAG_GEOG_PRIME_MERIDIAN_LONG_GEOKEY:
     {
       pGeoTiffData->geoData.geogPrimeMeridianLong = pDoubles[item.value];
       break;
     }
-    case GEOTAG_PROJECTEDCSTYPEGEOKEY:
+    case GEOTAG_PROJECTED_CS_TYPE_GEOKEY:
     {
       pGeoTiffData->geoData.projectedCSType = item.value;
       break;
     }
-    case GEOTAG_PCSCITATIONGEOKEY:
+    case GEOTAG_PCS_CITATION_GEOKEY:
     {
       pGeoTiffData->geoData.PCSCitation = std::string(pStrings + item.value, item.count);
       break;
     }
-    case GEOTAG_PROJECTIONGEOKEY:
+    case GEOTAG_PROJECTION_GEOKEY:
     {
       pGeoTiffData->geoData.projection = item.value;
       break;
     }
-    case GEOTAG_PROJLINEARUNITSGEOKEY:
+    case GEOTAG_PROJ_LINEAR_UNITS_GEOKEY:
     {
       pGeoTiffData->geoData.projLinearUnits = item.value;
       break;
@@ -902,13 +917,13 @@ static udError vcGeoTiff_ExtractGISData(struct udConvertCustomItem *pConvertInpu
   pData = (vcTiffConvertData *)pConvertInput->pData;
   UD_ERROR_NULL(pData, udE_InvalidParameter);
 
-  if (TIFFGetField(pData->pTiff, GEOTAG_MODELPIXELSCALETAG, &count, &ptr) == 1)
+  if (TIFFGetField(pData->pTiff, GEOTAG_MODEL_PIXEL_SCALE_TAG, &count, &ptr) == 1)
   {
     scale = *(udDouble3 *)(ptr);
     hasModelPixelScaleTag = true;
   }
 
-  if (TIFFGetField(pData->pTiff, GEOTAG_MODELTIEPOINTTAG, &count, &ptr) == 1)
+  if (TIFFGetField(pData->pTiff, GEOTAG_MODEL_TIEPOINT_TAG, &count, &ptr) == 1)
   {
     for (uint16 i = 0; i < count; i += 6)
     {
@@ -920,7 +935,7 @@ static udError vcGeoTiff_ExtractGISData(struct udConvertCustomItem *pConvertInpu
     hasModelTiepointTag = true;
   }
 
-  if (TIFFGetField(pData->pTiff, GEOTAG_MODELTRANSFORMATIONTAG, &count, &ptr) == 1)
+  if (TIFFGetField(pData->pTiff, GEOTAG_MODEL_TRANSFORMATION_TAG, &count, &ptr) == 1)
   {
     mat = *(udDouble4x4 *)(ptr);
     hasModelTransformationTag = true;
@@ -966,7 +981,7 @@ static udError vcGeoTiff_ExtractGISData(struct udConvertCustomItem *pConvertInpu
     UD_ERROR_SET(udE_InvalidConfiguration);
   }
     
-  UD_ERROR_IF(TIFFGetField(pData->pTiff, GEOTAG_GEOKEYDIRECTORYTAG, &count, &ptr) != 1, udE_ReadFailure);
+  UD_ERROR_IF(TIFFGetField(pData->pTiff, GEOTAG_GEOKEY_DIRECTORY_TAG, &count, &ptr) != 1, udE_ReadFailure);
 
   pGeoTiffData->geoKeyHeader.keyDirectoryVersion = ((uint16 *)ptr)[geoKeyCounter++];
   pGeoTiffData->geoKeyHeader.keyRevision = ((uint16 *)ptr)[geoKeyCounter++];
@@ -982,9 +997,9 @@ static udError vcGeoTiff_ExtractGISData(struct udConvertCustomItem *pConvertInpu
     geoKeys.push_back(key);
   }
 
-  if (TIFFGetField(pData->pTiff, GEOTAG_GEODOUBLEPARAMSTAG, &count, &ptr) == 1)
+  if (TIFFGetField(pData->pTiff, GEOTAG_GEO_DOUBLE_PARAMS_TAG, &count, &ptr) == 1)
     pDoubles = (double*)ptr;
-  if (TIFFGetField(pData->pTiff, GEOTAG_GEOASCIIPARAMSTAG, &count, &ptr) == 1)
+  if (TIFFGetField(pData->pTiff, GEOTAG_GEO_ASCII_PARAMS_TAG, &count, &ptr) == 1)
     pStrings = (char *)ptr;
   if (TIFFGetField(pData->pTiff, GEOTAG_GDAL_NODATA, &count, &ptr) == 1)
     pGeoTiffData->noDataTag = udStrAtof64((const char*)ptr);
