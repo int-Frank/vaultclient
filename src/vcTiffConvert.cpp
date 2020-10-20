@@ -3,7 +3,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <vector>
-#include <string>
+//#include <string>
 
 #include "udStringUtil.h"
 #include "udPlatformUtil.h"
@@ -100,32 +100,29 @@ struct vcGeoTiff_GeoKeyEntry
   uint16 value;
 };
 
-struct vcGeolocationData
+enum vcGeoTiff_DataType
 {
-  uint16 modelType;
-  uint16 rasterType;
-  uint16 geographicType;
-  uint16 geogGeodeticDatum;
-  uint16 geogAngularUnits;
-  uint16 projectedCSType;
-  uint16 projection;
-  uint16 projLinearUnits;
-  uint16 geogPrimeMeridian;
-  uint16 geogEllipsoid;
-  double geogSemiMajorAxis;
-  double geogSemiMinorAxis;
-  double geogInvFlattening;
-  double geogPrimeMeridianLong;
-  double geogAngularUnitSize;
-  std::string PCSCitation;
-  std::string citation;
-  std::string geogCitation;
+  vcDT_short,
+  vcDT_double,
+  vcDT_string,
+};
+
+struct vcGeoKeyItem
+{
+  uint16 id;
+  vcGeoTiff_DataType dataType;
+  union
+  {
+    uint16 _uint16;
+    double _double;
+    char *_string;
+  };
 };
 
 struct vcGeoTiffData
 {
   vcGeoTiff_GeoKeyHeader geoKeyHeader;
-  vcGeolocationData geoData;
+  std::vector<vcGeoKeyItem> geoKeys;
   udDouble4x4 T_raster_Model;
   bool hasNoDataTag;
   double noDataTag;
@@ -212,6 +209,36 @@ struct vcTiffConvertData
   uint32_t directoryCount;
   uint64_t pointsProcessed;
 };
+
+static const vcGeoKeyItem *vcGeoTiff_Find(const std::vector<vcGeoKeyItem> *pList, uint16 id)
+{
+  if (pList == nullptr)
+    return nullptr;
+
+  for (const vcGeoKeyItem &item : *pList)
+  {
+    if (item.id == id)
+      return &item;
+  }
+  return nullptr;
+}
+
+static void vcGeoTiff_Clear(vcGeoTiffData *pData)
+{
+  if (pData == nullptr)
+    return;
+
+  for (vcGeoKeyItem &item : pData->geoKeys)
+  {
+    if (item.dataType == vcDT_string)
+    {
+      udFree(item._string);
+      item._string = nullptr;
+    }
+  }
+
+  pData->geoKeys.clear();
+}
 
 static void vcTiff_PackSamples(uint8_t *pBuf, uint8_t *pSampleBuf, uint32_t sampleCount, uint32_t sampleBitWidth, uint32_t samplesPerPixel, uint32_t sample)
 {
@@ -785,16 +812,55 @@ epilogue:
   return result;
 }
 
-static std::string vcGeoTiff_ExtractString(const char *pCharArray, uint16 offset, uint16 length)
+static char * vcGeoTiff_ExtractString(const char *pCharArray, uint16 offset, uint16 length)
 {
-  if (pCharArray == nullptr)
-    return "";
+  if (pCharArray == nullptr || offset < 0 || length < 0)
+    return nullptr;
 
-  std::string str(pCharArray + offset, length);
-  if (str.back() == '|')
-    str.pop_back();
+  size_t trueLength = length;
+  if ((pCharArray + offset)[length - 1] == '|')
+    --trueLength;
 
-  return str;
+  char *pStr = udAllocType(char, trueLength + 1, udAF_Zero);
+  memcpy(pStr, pCharArray + offset, trueLength);
+
+  return pStr;
+}
+
+static void vcGeoTiff_PushShort(std::vector<vcGeoKeyItem> *pList, uint16 id, uint16 value)
+{
+  if (pList == nullptr)
+    return;
+
+  vcGeoKeyItem newItem = {};
+  newItem.id = id;
+  newItem.dataType = vcDT_short;
+  newItem._uint16 = value;
+  pList->push_back(newItem);
+}
+
+static void vcGeoTiff_PushDouble(std::vector<vcGeoKeyItem> *pList, uint16 id, double value)
+{
+  if (pList == nullptr)
+    return;
+
+  vcGeoKeyItem newItem = {};
+  newItem.id = id;
+  newItem.dataType = vcDT_double;
+  newItem._double = value;
+  pList->push_back(newItem);
+}
+
+static void vcGeoTiff_PushString(std::vector<vcGeoKeyItem> *pList, uint16 id, char *pStr)
+{
+  if (pList == nullptr)
+    return;
+
+  vcGeoKeyItem newItem = {};
+  newItem.id = id;
+  newItem.dataType = vcDT_string;
+  newItem._string = pStr;
+  pList->push_back(newItem);
 }
 
 static udError vcGeoTiff_TranslateGeokeys(vcGeoTiffData *pGeoTiffData, const std::vector<vcGeoTiff_GeoKeyEntry> &keyList, const double *pDoubles, const char *pStrings)
@@ -810,92 +876,92 @@ static udError vcGeoTiff_TranslateGeokeys(vcGeoTiffData *pGeoTiffData, const std
     {
     case GEOTAG_MODEL_TYPE_GEOKEY:
     {
-      pGeoTiffData->geoData.modelType = item.value;
+      vcGeoTiff_PushShort(&pGeoTiffData->geoKeys, GEOTAG_MODEL_TYPE_GEOKEY, item.value);
       break;
     }
     case GEOTAG_RASTER_TYPE_GEOKEY:
     {
-      pGeoTiffData->geoData.rasterType = item.value;
+      vcGeoTiff_PushShort(&pGeoTiffData->geoKeys, GEOTAG_RASTER_TYPE_GEOKEY, item.value);
       break;
     }
     case GEOTAG_CITATION_GEOKEY:
     {
-      pGeoTiffData->geoData.citation = vcGeoTiff_ExtractString(pStrings, item.value, item.count);
+      vcGeoTiff_PushString(&pGeoTiffData->geoKeys, GEOTAG_CITATION_GEOKEY, vcGeoTiff_ExtractString(pStrings, item.value, item.count));
       break;
     }
     case GEOTAG_GEOGRAPHIC_TYPE_GEOKEY:
     {
-      pGeoTiffData->geoData.geographicType = item.value;
+      vcGeoTiff_PushShort(&pGeoTiffData->geoKeys, GEOTAG_GEOGRAPHIC_TYPE_GEOKEY, item.value);
       break;
     }
     case GEOTAG_GEOG_CITATION_GEOKEY:
     {
-      pGeoTiffData->geoData.geogCitation = vcGeoTiff_ExtractString(pStrings, item.value, item.count);
+      vcGeoTiff_PushString(&pGeoTiffData->geoKeys, GEOTAG_GEOG_CITATION_GEOKEY, vcGeoTiff_ExtractString(pStrings, item.value, item.count));
       break;
     }
     case GEOTAG_GEOG_GEODETIC_DATUM_GEOKEY:
     {
-      pGeoTiffData->geoData.geogGeodeticDatum = item.value;
+      vcGeoTiff_PushShort(&pGeoTiffData->geoKeys, GEOTAG_GEOG_GEODETIC_DATUM_GEOKEY, item.value);
       break;
     }
     case GEOTAG_GEOG_ANGULAR_UNITS_GEOKEY:
     {
-      pGeoTiffData->geoData.geogAngularUnits = item.value;
+      vcGeoTiff_PushShort(&pGeoTiffData->geoKeys, GEOTAG_GEOG_ANGULAR_UNITS_GEOKEY, item.value);
       break;
     }
     case GEOTAG_GEOG_SEMI_MAJOR_AXIS_GEOKEY:
     {
-      pGeoTiffData->geoData.geogSemiMajorAxis = pDoubles[item.value];
+      vcGeoTiff_PushDouble(&pGeoTiffData->geoKeys, GEOTAG_GEOG_SEMI_MAJOR_AXIS_GEOKEY, pDoubles[item.value]);
       break;
     }
     case GEOTAG_GEOG_SEMI_MINOR_AXIS_GEOKEY:
     {
-      pGeoTiffData->geoData.geogSemiMinorAxis = pDoubles[item.value];
+      vcGeoTiff_PushDouble(&pGeoTiffData->geoKeys, GEOTAG_GEOG_SEMI_MINOR_AXIS_GEOKEY, pDoubles[item.value]);
       break;
     }
     case GEOTAG_GEOG_INV_FLATTENING_GEOKEY:
     {
-      pGeoTiffData->geoData.geogInvFlattening = pDoubles[item.value];
+      vcGeoTiff_PushDouble(&pGeoTiffData->geoKeys, GEOTAG_GEOG_INV_FLATTENING_GEOKEY, pDoubles[item.value]);
       break;
     }
     case GEOTAG_GEOG_PRIME_MERIDIAN_LONG_GEOKEY:
     {
-      pGeoTiffData->geoData.geogPrimeMeridianLong = pDoubles[item.value];
+      vcGeoTiff_PushDouble(&pGeoTiffData->geoKeys, GEOTAG_GEOG_PRIME_MERIDIAN_LONG_GEOKEY, pDoubles[item.value]);
       break;
     }
     case GEOTAG_PROJECTED_CS_TYPE_GEOKEY:
     {
-      pGeoTiffData->geoData.projectedCSType = item.value;
+      vcGeoTiff_PushShort(&pGeoTiffData->geoKeys, GEOTAG_PROJECTED_CS_TYPE_GEOKEY, item.value);
       break;
     }
     case GEOTAG_PCS_CITATION_GEOKEY:
     {
-      pGeoTiffData->geoData.PCSCitation = vcGeoTiff_ExtractString(pStrings, item.value, item.count);
+      vcGeoTiff_PushString(&pGeoTiffData->geoKeys, GEOTAG_PCS_CITATION_GEOKEY, vcGeoTiff_ExtractString(pStrings, item.value, item.count));
       break;
     }
     case GEOTAG_PROJECTION_GEOKEY:
     {
-      pGeoTiffData->geoData.projection = item.value;
+      vcGeoTiff_PushShort(&pGeoTiffData->geoKeys, GEOTAG_PROJECTION_GEOKEY, item.value);
       break;
     }
     case GEOTAG_PROJ_LINEAR_UNITS_GEOKEY:
     {
-      pGeoTiffData->geoData.projLinearUnits = item.value;
+      vcGeoTiff_PushShort(&pGeoTiffData->geoKeys, GEOTAG_PROJ_LINEAR_UNITS_GEOKEY, item.value);
       break;
     }
     case GEOTAG_GEOG_PRIME_MERIDIAN_GEOKEY:
     {
-      pGeoTiffData->geoData.geogPrimeMeridian = item.value;
+      vcGeoTiff_PushShort(&pGeoTiffData->geoKeys, GEOTAG_GEOG_PRIME_MERIDIAN_GEOKEY, item.value);
       break;
     }
     case GEOTAG_GEOG_ANGULAR_UNIT_SIZE_GEOKEY:
     {
-      pGeoTiffData->geoData.geogAngularUnitSize = pDoubles[item.value];
+      vcGeoTiff_PushDouble(&pGeoTiffData->geoKeys, GEOTAG_GEOG_ANGULAR_UNIT_SIZE_GEOKEY, pDoubles[item.value]);
       break;
     }
     case GEOTAG_GEOG_ELLIPSOID_GEOKEY:
     {
-      pGeoTiffData->geoData.geogEllipsoid = item.value;
+      vcGeoTiff_PushShort(&pGeoTiffData->geoKeys, GEOTAG_GEOG_ELLIPSOID_GEOKEY, item.value);
       break;
     }
     default:
@@ -1038,6 +1104,7 @@ static udError vcTiff_InitAsGeoTiff(struct udConvertCustomItem *pConvertInput, c
   udError result = udE_Failure;
   udResult r;
   udGeoZone zone = {};
+  const vcGeoKeyItem *pItem = nullptr;
   vcTiffConvertData *pData = nullptr;
 
   if (pConvertInput == nullptr)
@@ -1046,7 +1113,9 @@ static udError vcTiff_InitAsGeoTiff(struct udConvertCustomItem *pConvertInput, c
   pData = (vcTiffConvertData *)pConvertInput->pData;
   UD_ERROR_NULL(pData, udE_InvalidParameter);
 
-  r = udGeoZone_SetFromWKT(&zone, geoTiffData.geoData.PCSCitation.c_str());
+  pItem = vcGeoTiff_Find(&geoTiffData.geoKeys, GEOTAG_PCS_CITATION_GEOKEY);
+  if (pItem != nullptr)
+    r = udGeoZone_SetFromWKT(&zone, pItem->_string);
 
   //udConvert_GetInfo
 
@@ -1082,6 +1151,7 @@ udError TiffConvert_Open(struct udConvertCustomItem *pConvertInput, uint32_t eve
       // Failed to geolocate tiff, but try to convert anyway.
     }
   }
+  vcGeoTiff_Clear(&geoTiffData);
 
   // TODO Check for and deal with image depth; saved as (format.imageDepth)
   //      What do we even do with this?
