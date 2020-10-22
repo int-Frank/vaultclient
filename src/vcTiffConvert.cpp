@@ -976,10 +976,9 @@ epilogue:
   return result;
 }
 
-static udError vcGeoTiff_ExtractGISData(struct udConvertCustomItem *pConvertInput, vcGeoTiffData *pGeoTiffData)
+static udError vcGeoTiff_ExtractGISData(TIFF *pTiff, vcGeoTiffData *pGeoTiffData)
 {
   udError result = udE_Failure;
-  vcTiffConvertData *pData = nullptr;
   int geoKeyCounter = 0;
   uint32 count = 0;
   void *ptr = nullptr;
@@ -1000,19 +999,16 @@ static udError vcGeoTiff_ExtractGISData(struct udConvertCustomItem *pConvertInpu
 
   std::vector<TiePoint> tiePoints;
 
-  if (pConvertInput == nullptr || pGeoTiffData == nullptr)
+  if (pTiff == nullptr || pGeoTiffData == nullptr)
     UD_ERROR_SET(udE_InvalidParameter);
 
-  pData = (vcTiffConvertData *)pConvertInput->pData;
-  UD_ERROR_NULL(pData, udE_InvalidParameter);
-
-  if (TIFFGetField(pData->pTiff, GEOTAG_MODEL_PIXEL_SCALE_TAG, &count, &ptr) == 1)
+  if (TIFFGetField(pTiff, GEOTAG_MODEL_PIXEL_SCALE_TAG, &count, &ptr) == 1)
   {
     scale = *(udDouble3 *)(ptr);
     hasModelPixelScaleTag = true;
   }
 
-  if (TIFFGetField(pData->pTiff, GEOTAG_MODEL_TIEPOINT_TAG, &count, &ptr) == 1)
+  if (TIFFGetField(pTiff, GEOTAG_MODEL_TIEPOINT_TAG, &count, &ptr) == 1)
   {
     for (uint16 i = 0; i < count; i += 6)
     {
@@ -1024,7 +1020,7 @@ static udError vcGeoTiff_ExtractGISData(struct udConvertCustomItem *pConvertInpu
     hasModelTiepointTag = true;
   }
 
-  if (TIFFGetField(pData->pTiff, GEOTAG_MODEL_TRANSFORMATION_TAG, &count, &ptr) == 1)
+  if (TIFFGetField(pTiff, GEOTAG_MODEL_TRANSFORMATION_TAG, &count, &ptr) == 1)
   {
     mat = *(udDouble4x4 *)(ptr);
     hasModelTransformationTag = true;
@@ -1070,7 +1066,7 @@ static udError vcGeoTiff_ExtractGISData(struct udConvertCustomItem *pConvertInpu
     UD_ERROR_SET(udE_InvalidConfiguration);
   }
     
-  UD_ERROR_IF(TIFFGetField(pData->pTiff, GEOTAG_GEOKEY_DIRECTORY_TAG, &count, &ptr) != 1, udE_ReadFailure);
+  UD_ERROR_IF(TIFFGetField(pTiff, GEOTAG_GEOKEY_DIRECTORY_TAG, &count, &ptr) != 1, udE_ReadFailure);
 
   pGeoTiffData->geoKeyHeader.keyDirectoryVersion = ((uint16 *)ptr)[geoKeyCounter++];
   pGeoTiffData->geoKeyHeader.keyRevision = ((uint16 *)ptr)[geoKeyCounter++];
@@ -1086,44 +1082,14 @@ static udError vcGeoTiff_ExtractGISData(struct udConvertCustomItem *pConvertInpu
     geoKeys.push_back(key);
   }
 
-  if (TIFFGetField(pData->pTiff, GEOTAG_GEO_DOUBLE_PARAMS_TAG, &count, &ptr) == 1)
+  if (TIFFGetField(pTiff, GEOTAG_GEO_DOUBLE_PARAMS_TAG, &count, &ptr) == 1)
     pDoubles = (double*)ptr;
-  if (TIFFGetField(pData->pTiff, GEOTAG_GEO_ASCII_PARAMS_TAG, &count, &ptr) == 1)
+  if (TIFFGetField(pTiff, GEOTAG_GEO_ASCII_PARAMS_TAG, &count, &ptr) == 1)
     pStrings = (char *)ptr;
-  if (TIFFGetField(pData->pTiff, GEOTAG_GDAL_NODATA, &count, &ptr) == 1)
+  if (TIFFGetField(pTiff, GEOTAG_GDAL_NODATA, &count, &ptr) == 1)
     pGeoTiffData->noDataTag = udStrAtof64((const char*)ptr);
 
   result = vcGeoTiff_TranslateGeokeys(pGeoTiffData, geoKeys, pDoubles, pStrings);
-epilogue:
-  return result;
-}
-
-#include "udGeoZone.h"
-static udError vcTiff_InitAsGeoTiff(struct udConvertCustomItem *pConvertInput, const vcGeoTiffData &geoTiffData)
-{
-  udError result = udE_Failure;
-  udResult r;
-  udGeoZone zone = {};
-  const vcGeoKeyItem *pItem = nullptr;
-  vcTiffConvertData *pData = nullptr;
-
-  if (pConvertInput == nullptr)
-    UD_ERROR_SET(udE_InvalidParameter);
-
-  pData = (vcTiffConvertData *)pConvertInput->pData;
-  UD_ERROR_NULL(pData, udE_InvalidParameter);
-
-  pItem = vcGeoTiff_Find(&geoTiffData.geoKeys, GEOTAG_PCS_CITATION_GEOKEY); // WKT
-  if (pItem != nullptr)
-    r = udGeoZone_SetFromWKT(&zone, pItem->_string);
-
-  pItem = vcGeoTiff_Find(&geoTiffData.geoKeys, GEOTAG_PROJECTED_CS_TYPE_GEOKEY); // SRID
-  if (pItem != nullptr)
-    r = udGeoZone_SetFromSRID(&zone, pItem->_uint16);
-
-  //udConvert_SetSRID();
-
-  result = udE_Success;
 epilogue:
   return result;
 }
@@ -1147,16 +1113,6 @@ udError TiffConvert_Open(struct udConvertCustomItem *pConvertInput, uint32_t eve
   pData->origin = {origin[0], origin[1], origin[2]};
   pData->everyNth = everyNth;
   pData->convertFlags = flags;
-
-  // TODO this needs to go in vcTiff_AddItem
-  if (vcGeoTiff_ExtractGISData(pConvertInput, &geoTiffData) == udE_Success)
-  {
-    if (vcTiff_InitAsGeoTiff(pConvertInput, geoTiffData) != udE_Success)
-    {
-      // Failed to geolocate tiff, but try to convert anyway. Can we send a message to the user?
-    }
-  }
-  vcGeoTiff_Clear(&geoTiffData);
 
   // TODO Check for and deal with image depth; saved as (format.imageDepth)
   //      What do we even do with image depth?
@@ -1306,31 +1262,34 @@ void TiffConvert_Close(struct udConvertCustomItem *pConvertInput)
   memset(pData, 0, sizeof(vcTiffConvertData));
 }
 
-//static void vcTiff_AddTiffDirectory(udConvertContext *pConvertContext, const char *pFilename, int directoryIndex)
-//{
-//  udConvertCustomItem item = {};
-//  vcTiffConvertData *pData = udAllocType(vcTiffConvertData, 1, udAF_Zero);
-//
-//  item.pOpen = TiffConvert_Open;
-//  item.pReadPointsFloat = TiffConvert_ReadFloat;
-//  item.pDestroy = TiffConvert_Destroy;
-//  item.pClose = TiffConvert_Close;
-//
-//  item.pData = pData;
-//
-//  item.pName = udStrdup(pFilename);
-//  item.boundsKnown = false;
-//  item.pointCount = -1;
-//  item.pointCountIsEstimate = false;
-//
-//  item.sourceResolution = 0;
-//  udAttributeSet_Create(&item.attributes, udSAC_ARGB, 0);
-//
-//  // TODO Set point estimate, geolocated.
-//
-//  // Do the actual conversion
-//  return udConvert_AddCustomItem(pConvertContext, &item);
-//}
+udError vcTiff_TryToSetAsGeolocated(udConvertContext *pConvertContext, const char *pFilename)
+{
+  udError result;
+  TIFF *pTiff = nullptr;
+  vcGeoTiffData geoTiffData = {};
+  const vcGeoKeyItem *pItem = nullptr;
+
+  if (pConvertContext == nullptr || pFilename == nullptr)
+    UD_ERROR_SET(udE_InvalidParameter);
+
+  pTiff = TIFFOpen(pFilename, "r");
+  UD_ERROR_NULL(pTiff, udE_OpenFailure);
+
+  UD_ERROR_CHECK(vcGeoTiff_ExtractGISData(pTiff, &geoTiffData));
+
+  // Is this tag even the WKT? If so, should we add to the uds metadata?
+  //pItem = vcGeoTiff_Find(&geoTiffData.geoKeys, GEOTAG_PCS_CITATION_GEOKEY); // WKT
+
+  // GEOTAG_PROJECTED_CS_TYPE_GEOKEY seems to be the SRID in most cases
+  pItem = vcGeoTiff_Find(&geoTiffData.geoKeys, GEOTAG_PROJECTED_CS_TYPE_GEOKEY);
+  if (pItem != nullptr)
+    UD_ERROR_CHECK(udConvert_SetSRID(pConvertContext, 1, (int)pItem->_uint16));
+
+  result = udE_Success;
+epilogue:
+  vcGeoTiff_Clear(&geoTiffData);
+  return result;
+}
 
 udError vcTiff_AddItem(udConvertContext *pConvertContext, const char *pFilename)
 {
@@ -1352,7 +1311,8 @@ udError vcTiff_AddItem(udConvertContext *pConvertContext, const char *pFilename)
   item.sourceResolution = 0;
   udAttributeSet_Create(&item.attributes, udSAC_ARGB, 0);
 
-  // TODO Set point estimate, geolocated.
+  // TODO Set point estimate
+  vcTiff_TryToSetAsGeolocated(pConvertContext, pFilename);
 
   // Do the actual conversion
   return udConvert_AddCustomItem(pConvertContext, &item);
