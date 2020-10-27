@@ -648,8 +648,8 @@ udResult vcRender_ResizeScene(vcState *pProgramState, vcRenderContext *pRenderCo
 
   for (int i = 0; i < vcRender_RenderBufferCount; ++i)
   {
-    UD_ERROR_CHECK(vcTexture_Create(&pRenderContext->gBuffer[i].pColour, widthIncr, heightIncr, nullptr, vcTextureFormat_RGBA16F, vcTFM_Linear, vcTCF_RenderTarget));
-    UD_ERROR_CHECK(vcTexture_Create(&pRenderContext->gBuffer[i].pNormal, widthIncr, heightIncr, nullptr, vcTextureFormat_RGBA16F, vcTFM_Linear, vcTCF_RenderTarget | vcTCF_AsynchronousRead));
+    UD_ERROR_CHECK(vcTexture_Create(&pRenderContext->gBuffer[i].pColour, widthIncr, heightIncr, nullptr, vcTextureFormat_RGBA32F, vcTFM_Linear, vcTCF_RenderTarget));
+    UD_ERROR_CHECK(vcTexture_Create(&pRenderContext->gBuffer[i].pNormal, widthIncr, heightIncr, nullptr, vcTextureFormat_RGBA32F, vcTFM_Linear, vcTCF_RenderTarget | vcTCF_AsynchronousRead));
     UD_ERROR_CHECK(vcTexture_Create(&pRenderContext->gBuffer[i].pDepth, widthIncr, heightIncr, nullptr, vcTextureFormat_D32F, vcTFM_Nearest, vcTCF_RenderTarget));
     UD_ERROR_IF(!vcFramebuffer_Create(&pRenderContext->gBuffer[i].pFramebuffer, pRenderContext->gBuffer[i].pColour, pRenderContext->gBuffer[i].pDepth, 0, pRenderContext->gBuffer[i].pNormal), udR_InternalError);
   }
@@ -716,13 +716,17 @@ float Float16ToFloat32(uint16_t float16)
 
 float vcRender_EncodeModelId(uint32_t id)
 {
-  return float(id & 0xffff) / 0xffff;
+  return float(id & 0xffffffff) / 0xffffffff;
 }
 
-void vcRender_DecodeModelId(uint8_t pixelBytes[8], uint16_t *pId, float *pDepth)
+void vcRender_DecodeModelId(uint8_t pixelBytes[16], uint16_t *pId, float *pDepth)
 {
-  *pDepth = udAbs(Float16ToFloat32(uint16_t((pixelBytes[2] & 0xFF) | ((pixelBytes[3] & 0xFF) << 8))));
-  *pId = uint16_t((Float16ToFloat32(uint16_t((pixelBytes[0] & 0xFF) | ((pixelBytes[1] & 0xFF) << 8))) * 0xffff) + 0.5f);
+  uint32_t depthInt = uint32_t((pixelBytes[4] & 0xFF) | uint32_t((pixelBytes[5] & 0xFF) << 8)) | uint32_t((pixelBytes[6] & 0xFF) << 16) | uint32_t((pixelBytes[7] & 0xFF) << 24);
+  *pDepth = udAbs(*((float *)&depthInt));
+
+  uint32_t idInt = uint32_t((pixelBytes[0] & 0xFF) | (uint32_t)((pixelBytes[1] & 0xFF) << 8)) | (uint32_t)((pixelBytes[2] & 0xFF) << 16) | (uint32_t)((pixelBytes[3] & 0xFF) << 24);
+  float idFloat = *((float *)&idInt);
+  *pId = uint16_t((idFloat * 0xffffffff) + 0.5f);
 }
 
 // Asychronously read a 1x1 region of last frames depth buffer 
@@ -733,7 +737,7 @@ udResult vcRender_AsyncReadFrameDepth(vcRenderContext *pRenderContext)
   if (pRenderContext->currentMouseUV.x < 0 || pRenderContext->currentMouseUV.x > 1 || pRenderContext->currentMouseUV.y < 0 || pRenderContext->currentMouseUV.y > 1)
     return result;
 
-  uint8_t pixelBytes[8] = {};
+  uint8_t pixelBytes[16] = {};
 
   if (pRenderContext->asyncReadTarget != -1)
   {
@@ -754,15 +758,15 @@ epilogue:
   return result;
 }
 
-udDouble3 vcRender_DepthToWorldPosition(vcState *pProgramState, vcRenderContext *pRenderContext, double depthIn)
+udDouble3 vcRender_DepthToWorldPosition(vcState *pProgramState, vcRenderContext *pRenderContext, float logDepth)
 {
-  double clipDepth = depthIn;
+  double clipDepth = logDepth;
   if (!pProgramState->settings.camera.mapMode[pProgramState->activeViewportIndex])
   {
     // reconstruct clip depth from log z
     float a = pProgramState->settings.camera.farPlane / (pProgramState->settings.camera.farPlane - pProgramState->settings.camera.nearPlane);
     float b = pProgramState->settings.camera.farPlane * pProgramState->settings.camera.nearPlane / (pProgramState->settings.camera.nearPlane - pProgramState->settings.camera.farPlane);
-    double worldDepth = udPow(2.0, depthIn * udLog2(pProgramState->settings.camera.farPlane + 1.0)) - 1.0;
+    double worldDepth = udPow(2.0, logDepth * udLog2(pProgramState->settings.camera.farPlane + 1.0)) - 1.0;
     clipDepth = a + b / worldDepth;
   }
 
@@ -773,8 +777,37 @@ udDouble3 vcRender_DepthToWorldPosition(vcState *pProgramState, vcRenderContext 
   clipPos.y = -clipPos.y;
 #endif
 
+  udDouble4 n = pProgramState->pActiveViewport->camera.matrices.inverseViewProjection * udDouble4::create(pRenderContext->currentMouseUV.x * 2.0 - 1.0, 1.0 - (pRenderContext->currentMouseUV.y * 2.0), 0, 1.0);
+  n /= n.w;
+  udDouble4 f = pProgramState->pActiveViewport->camera.matrices.inverseViewProjection * udDouble4::create(pRenderContext->currentMouseUV.x * 2.0 - 1.0, 1.0 - (pRenderContext->currentMouseUV.y * 2.0), 1.0, 1.0);
+  f /= f.w;
+
+  double a = s_CameraFarPlane / (s_CameraFarPlane - s_CameraNearPlane);
+  double b = s_CameraFarPlane * s_CameraNearPlane / (s_CameraNearPlane - s_CameraFarPlane);
+  double worldDepth = pow(2.0, logDepth * log2(s_CameraFarPlane + 1.0)) - 1.0;
+  double lDepth = a + b / worldDepth;
+  lDepth = (2.0 * s_CameraNearPlane) / (s_CameraFarPlane + s_CameraNearPlane - lDepth * (s_CameraFarPlane - s_CameraNearPlane));
+
+  udDouble3 r = (n + (f - n) * lDepth).toVector3();
+
+  udDouble3 dir = udNormalize3(f - n).toVector3();
+  udDouble3 p0 = pProgramState->pActiveViewport->camera.worldMouseRay.position;
+  udDouble3 d0 = pProgramState->pActiveViewport->camera.worldMouseRay.direction;
+
   udDouble4 pickPosition4 = pProgramState->pActiveViewport->camera.matrices.inverseViewProjection * clipPos;
-  return pickPosition4.toVector3() / pickPosition4.w;
+  udDouble3 pickPosition = pickPosition4.toVector3() / pickPosition4.w;
+
+  //printf("%f: %f,%f,%f...%f: %f, %f, %f\n", clipDepth, pickPosition.x, pickPosition.y, pickPosition.z, depthIn, r.x, r.y, r.z);
+ // printf("near2: %f, %f, %f. far: %f, %f, %f :: %f, %f, %f\n", n.x, n.y, n.z, f.x, f.y, f.z, dir.x, dir.y, dir.z);
+
+  udDouble3 diff = pickPosition - r;
+  printf("%f: %f, %f, %f\n", lDepth, diff.x, diff.y, diff.z);
+
+  udDouble3 r0 = (n + (f - n) * 0).toVector3();
+  udDouble3 r1 = (n + (f - n) * 1.0).toVector3();
+
+  return pickPosition;
+
 }
 
 void vcRenderSkybox(vcState *pProgramState, vcRenderContext *pRenderContext)
@@ -1892,7 +1925,7 @@ vcRenderPickResult vcRender_PolygonPick(vcState *pProgramState, vcRenderContext 
   float pickDepth = 1.0f;
   if (doSelectRender)
   {
-    uint8_t pixelBytes[8] = {};
+    uint8_t pixelBytes[16] = {};
     vcTexture_EndReadPixels(pRenderContext->gBuffer[pRenderContext->asyncReadTarget].pNormal, pRenderContext->picking.location.x, pRenderContext->picking.location.y, 1, 1, pixelBytes);
     pRenderContext->asyncReadTarget = -1;
 

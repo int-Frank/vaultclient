@@ -249,6 +249,9 @@ void vcCamera_UpdateMatrices(const udGeoZone &zone, vcCamera *pCamera, const vcC
 
     pCamera->worldMouseRay.position = mouseNear.toVector3();
     pCamera->worldMouseRay.direction = udNormalize3(mouseFar - mouseNear).toVector3();
+
+   // printf("near : %f, %f, %f. far: %f, %f, %f :: %f, %f, %f\n", mouseNear.x, mouseNear.y, mouseNear.z, mouseFar.x, mouseFar.y, mouseFar.z, pCamera->worldMouseRay.direction.x, pCamera->worldMouseRay.direction.y, pCamera->worldMouseRay.direction.z);
+
   }
 }
 

@@ -776,7 +776,8 @@ void vcModel::HandleContextMenu(vcState *pProgramState)
 
           udWorkerPoolCallback callback = [pProgramState, pCloud, pFilter](void*)
           {
-            udError result = udPointCloud_Export(pCloud, pProgramState->modelPath, pFilter);
+            float progress = 0.0f;
+            udError result = udPointCloud_Export(pCloud, pProgramState->modelPath, pFilter, &progress);
             if (result != udE_Success)
             {
               ErrorItem status;
